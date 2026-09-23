@@ -61,28 +61,38 @@ TRIGGER_LABELS = {
 }
 
 DEFAULT_CONFIG = {
-    "work_time_min":   25,
-    "work_time_sec":    0,
-    "popup_opacity":  100,
-    "test_mode":     True,
-    "cycle_align":  False,
-    "font_name":    "Montserrat",
+    "work_time_min":  24,
+    "work_time_sec":   0,
+    "popup_opacity": 100,
+    "test_mode":   False,
+    "cycle_align":  True,
+    "font_name":   "Montserrat",
     "message_color": "#222222",
     "popups": [
-        {"trigger": "start",     "message": "EyeGuard is now active — helping you care for your eyes!", "image": "1.png", "sound": "sound_01.mp3", "sound_repeat": 1},
-        {"trigger": "work_end",  "message": "Your eyes deserve a quick rest. Take a 30-second break!",  "image": "2.png", "sound": "sound_04.mp3", "sound_repeat": 1},
-        {"trigger": "break_end", "message": "Eye break's over. Enjoy 4 minutes just for you!",          "image": "3.png", "sound": "sound_07.mp3", "sound_repeat": 1, "duration_min": 1, "duration_sec": 0},
-        {"trigger": "break_end", "message": "Great! Let's get back to it, refreshed and focused!",      "image": "4.png", "sound": "sound_02.mp3", "sound_repeat": 1, "duration_min": 4, "duration_sec": 0},
+        {"trigger": "start",     "message": "EyeGuard is now active \u2014 helping you care for your eyes!", "image": "1.png", "sound": "sound_01.mp3", "sound_repeat": 1},
+        {"trigger": "work_end",  "message": "Your eyes deserve a quick rest. Take a 30-second break!",       "image": "2.png", "sound": "sound_04.mp3", "sound_repeat": 1},
+        {"trigger": "break_end", "message": "Let AI help \u2014 build, test, commit!",                        "image": "3.png", "sound": "sound_09.mp3", "sound_repeat": 1, "duration_min": 3, "duration_sec": 0},
+        {"trigger": "break_end", "message": "Your eyes deserve a quick rest. Take a 60-second break!",       "image": "2.png", "sound": "sound_05.mp3", "sound_repeat": 2, "duration_min": 1, "duration_sec": 0},
+        {"trigger": "break_end", "message": "You\u2019re refreshed now! Go enjoy your life!",                 "image": "1.png", "sound": "sound_10.mp3", "sound_repeat": 3, "duration_min": 2, "duration_sec": 0},
+        {"trigger": "break_end", "message": "Great! Let\u2019s get back to it, refreshed and focused!",      "image": "4.png", "sound": "sound_06.mp3", "sound_repeat": 3, "duration_min": 0, "duration_sec": 0},
     ],
 }
 
 # ====================== HELPERS ======================
 
 def load_config():
+    """
+    Load config.json from SCRIPT_DIR (same folder as the .exe / script).
+    Falls back to DEFAULT_CONFIG if the file is missing or unreadable.
+    Never calls messagebox here — Tk may not exist yet.
+    Stores any load error in load_config.error so __init__ can show it after Tk starts.
+    """
+    load_config.error = None
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
+            # ── Migrate old key names ──────────────────────────────────
             if "work_time" in cfg and "work_time_min" not in cfg:
                 cfg["work_time_min"] = cfg.pop("work_time")
                 cfg.setdefault("work_time_sec", 0)
@@ -98,12 +108,15 @@ def load_config():
                         p["trigger"]      = "break_end"
                         p["duration_min"] = free_min
                         p["duration_sec"] = 0
+            # ── Fill any missing top-level keys with defaults ──────────
             for k, v in DEFAULT_CONFIG.items():
                 cfg.setdefault(k, v)
             return cfg
         except Exception as e:
-            messagebox.showerror("Load Error", f"Could not read config.json:\n{e}\n\nUsing defaults.")
+            load_config.error = str(e)
     return json.loads(json.dumps(DEFAULT_CONFIG))
+
+load_config.error = None   # initialise attribute
 
 def save_config(cfg):
     try:
@@ -137,7 +150,27 @@ def get_popup(cfg, trigger):
     return {"trigger": trigger, "message": "", "image": "", "sound": "", "sound_repeat": 1}
 
 def get_break_milestones(cfg):
-    return [p for p in cfg.get("popups", []) if p.get("trigger") == "break_end"]
+    """Return all break_end popups that have a non-zero duration (i.e. not the cycle-end entry)."""
+    return [p for p in cfg.get("popups", [])
+            if p.get("trigger") == "break_end"
+            and (p.get("duration_min", 0) > 0 or p.get("duration_sec", 0) > 0)]
+
+def get_cycle_end_popup(cfg):
+    """
+    Return the last break_end popup that has duration 0 — this is the
+    'Cycle End' popup that fires last with no wait after it.
+    Falls back to the last break_end popup overall, or a blank entry.
+    """
+    candidates = [p for p in cfg.get("popups", []) if p.get("trigger") == "break_end"]
+    # Prefer an explicit zero-duration entry
+    for p in reversed(candidates):
+        if p.get("duration_min", 0) == 0 and p.get("duration_sec", 0) == 0:
+            return p
+    # Otherwise use the last break_end entry as cycle-end (remove from milestones)
+    if candidates:
+        return candidates[-1]
+    return {"trigger": "break_end", "message": "", "image": "", "sound": "", "sound_repeat": 1,
+            "duration_min": 0, "duration_sec": 0}
 
 def fmt_duration(total_sec):
     """Format total seconds as  Xm Ys  string."""
@@ -328,6 +361,7 @@ class BreakMilestoneManager:
         self.sounds          = sounds
         self._on_changed     = on_entries_changed
         self._entries        = []
+        self._cycle_end_vars = {}   # populated by _build_cycle_end_section
 
         self._build_header()
         self._empty_label = tk.Label(
@@ -335,6 +369,8 @@ class BreakMilestoneManager:
             text="No break milestones yet. Click '＋ Add Milestone' to create one.",
             font=("Segoe UI", 9), bg=self.PANEL, fg="#aaaaaa", justify="center",
         )
+        # Cycle End section is built last (after milestones) but must exist before _repack
+        self._build_cycle_end_section()
 
     def _build_header(self):
         self._header = tk.Frame(self.parent, bg=self.PANEL)
@@ -352,6 +388,69 @@ class BreakMilestoneManager:
                   activebackground="#1558b0", activeforeground="white",
                   relief="flat", cursor="hand2", padx=10, pady=3, bd=0,
                   command=self._add_entry).pack(side="right", padx=(0, 2))
+
+    def _build_cycle_end_section(self):
+        """
+        Build the fixed 'Cycle End' LabelFrame and store it as self._cycle_end_section.
+        The widget is NOT packed here — _repack() packs it last every time so it
+        always sits below every milestone card, even after add / delete / reorder.
+        """
+        section = tk.LabelFrame(
+            self.parent,
+            text="  \U0001f3c1  Cycle End  —  last popup before new cycle starts  ",
+            font=self.FONT_TITLE,
+            bg=self.PANEL, fg=self.ACCENT,
+            relief="groove", bd=1, padx=10, pady=8,
+        )
+        # Do NOT call section.pack() here — _repack() controls placement
+        self._cycle_end_section = section
+
+        info = tk.Frame(section, bg=self.PANEL)
+        info.pack(fill="x", pady=(0, 6))
+        tk.Label(
+            info,
+            text=("This popup fires after the last Break Milestone.\n"
+                  "It has no wait time — a new work cycle begins immediately after it."),
+            font=("Segoe UI", 8), bg=self.PANEL, fg=self.FG_LIGHT,
+            justify="left", wraplength=500,
+        ).pack(anchor="w")
+        tk.Frame(section, height=1, bg=self.BORDER).pack(fill="x", pady=(0, 6))
+
+        self._cycle_end_vars = {
+            "message":      tk.StringVar(),
+            "image":        tk.StringVar(),
+            "sound":        tk.StringVar(),
+            "sound_repeat": tk.StringVar(value="1"),
+        }
+        v = self._cycle_end_vars
+
+        r_msg = tk.Frame(section, bg=self.PANEL); r_msg.pack(fill="x", pady=2)
+        tk.Label(r_msg, text="Message", font=self.FONT_MAIN,
+                 bg=self.PANEL, fg=self.FG, width=18, anchor="w").pack(side="left")
+        tk.Entry(r_msg, textvariable=v["message"], width=42, font=self.FONT_MAIN,
+                 relief="solid", bd=1, highlightthickness=0
+                 ).pack(side="left", fill="x", expand=True)
+
+        r_img = tk.Frame(section, bg=self.PANEL); r_img.pack(fill="x", pady=2)
+        tk.Label(r_img, text="Image", font=self.FONT_MAIN,
+                 bg=self.PANEL, fg=self.FG, width=18, anchor="w").pack(side="left")
+        figures_list = list_figures()
+        _build_image_row(r_img, v["image"], figures_list,
+                         bg=self.PANEL, font=self.FONT_MAIN,
+                         fg=self.FG, fg_light=self.FG_LIGHT)
+
+        r_snd = tk.Frame(section, bg=self.PANEL); r_snd.pack(fill="x", pady=2)
+        tk.Label(r_snd, text="Sound", font=self.FONT_MAIN,
+                 bg=self.PANEL, fg=self.FG, width=18, anchor="w").pack(side="left")
+        sounds_list = list_sounds()
+        _build_sound_row(r_snd, v["sound"], sounds_list,
+                         bg=self.PANEL, font=self.FONT_MAIN,
+                         fg=self.FG, fg_light=self.FG_LIGHT)
+        tk.Label(r_snd, text="  Repeat", font=self.FONT_MAIN,
+                 bg=self.PANEL, fg=self.FG).pack(side="left")
+        tk.Spinbox(r_snd, from_=1, to=10, width=4, textvariable=v["sound_repeat"],
+                   font=self.FONT_MAIN, relief="solid", bd=1,
+                   highlightthickness=0).pack(side="left", padx=(4, 0))
 
     def _add_entry(self, data=None):
         if data is None:
@@ -468,15 +567,26 @@ class BreakMilestoneManager:
             self._on_changed()
 
     def _repack(self):
+        """
+        Re-pack all dynamic widgets in the correct order:
+          [empty label OR milestone cards]  →  [Cycle End section always last]
+        """
+        # 1. Hide everything that we control
         self._empty_label.pack_forget()
         for e in self._entries:
             e["frame"].pack_forget()
+        self._cycle_end_section.pack_forget()
+
+        # 2. Pack milestones (or the placeholder label)
         if not self._entries:
             self._empty_label.pack(fill="x", padx=8, pady=6)
         else:
             for i, e in enumerate(self._entries):
                 e["frame"].pack(fill="x")
                 e["_idx_label"].config(text=f"Milestone #{i + 1}")
+
+        # 3. Always pack Cycle End section last so it stays at the bottom
+        self._cycle_end_section.pack(fill="x", padx=2, pady=(10, 4))
 
     def load_milestones(self, milestone_list):
         for e in list(self._entries):
@@ -505,6 +615,27 @@ class BreakMilestoneManager:
                 "duration_sec": max(0, min(59, dur_sec)),
             })
         return result
+
+    def load_cycle_end(self, data):
+        v = self._cycle_end_vars
+        v["message"].set(data.get("message", ""))
+        v["image"].set(data.get("image", ""))
+        v["sound"].set(data.get("sound", ""))
+        v["sound_repeat"].set(str(data.get("sound_repeat", 1)))
+
+    def collect_cycle_end(self):
+        v = self._cycle_end_vars
+        try: repeat = int(v["sound_repeat"].get())
+        except ValueError: repeat = 1
+        return {
+            "trigger":      "break_end",
+            "message":      v["message"].get().strip(),
+            "image":        v["image"].get().strip(),
+            "sound":        v["sound"].get().strip(),
+            "sound_repeat": max(1, repeat),
+            "duration_min": 0,
+            "duration_sec": 0,
+        }
 
     @property
     def entries(self):
@@ -673,6 +804,11 @@ class ConfigApp(tk.Tk):
                 pass
 
         self.cfg              = load_config()
+        # Show any config-load error now that Tk exists
+        if load_config.error:
+            messagebox.showerror(
+                "Load Error",
+                f"Could not read config.json:\n{load_config.error}\n\nUsing defaults.")
         self._timer_rows      = []
         self.var_test         = tk.BooleanVar()
         self.var_cycle_align  = tk.BooleanVar()
@@ -1173,8 +1309,12 @@ class ConfigApp(tk.Tk):
         milestones = get_break_milestones(self.cfg)
         if not milestones:
             milestones = [p for p in DEFAULT_CONFIG["popups"]
-                          if p["trigger"] == "break_end"]
+                          if p["trigger"] == "break_end"
+                          and (p.get("duration_min", 0) > 0 or p.get("duration_sec", 0) > 0)]
         self._milestone_manager.load_milestones(milestones)
+
+        cycle_end = get_cycle_end_popup(self.cfg)
+        self._milestone_manager.load_cycle_end(cycle_end)
 
     def _collect(self):
         try:
@@ -1209,6 +1349,7 @@ class ConfigApp(tk.Tk):
                     "sound_repeat": max(1, repeat),
                 })
         popups.extend(self._milestone_manager.collect_milestones())
+        popups.append(self._milestone_manager.collect_cycle_end())
 
         return {
             "work_time_min":  work_min,

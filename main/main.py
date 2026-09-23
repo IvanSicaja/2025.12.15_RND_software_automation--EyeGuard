@@ -20,17 +20,17 @@ else:
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "config.json")
 
 DEFAULT_CONFIG = {
-    "work_time_min":   25,
-    "work_time_sec":    0,
-    "popup_opacity":  100,
-    "test_mode":    False,
-    "cycle_align":   True,
-    "font_name":    "Montserrat",
+    "work_time_min":  24,
+    "work_time_sec":   0,
+    "popup_opacity": 100,
+    "test_mode":   False,
+    "cycle_align":  True,
+    "font_name":   "Montserrat",
     "message_color": "#222222",
     "popups": [
         {
             "trigger": "start",
-            "message": "EyeGuard is now active — helping you care for your eyes!",
+            "message": "EyeGuard is now active \u2014 helping you care for your eyes!",
             "image": "1.png",
             "sound": "sound_01.mp3",
             "sound_repeat": 1
@@ -44,20 +44,38 @@ DEFAULT_CONFIG = {
         },
         {
             "trigger": "break_end",
-            "message": "Eye break's over. Enjoy 4 minutes just for you!",
+            "message": "Let AI help \u2014 build, test, commit!",
             "image": "3.png",
-            "sound": "sound_07.mp3",
+            "sound": "sound_09.mp3",
             "sound_repeat": 1,
+            "duration_min": 3,
+            "duration_sec": 0
+        },
+        {
+            "trigger": "break_end",
+            "message": "Your eyes deserve a quick rest. Take a 60-second break!",
+            "image": "2.png",
+            "sound": "sound_05.mp3",
+            "sound_repeat": 2,
             "duration_min": 1,
             "duration_sec": 0
         },
         {
             "trigger": "break_end",
-            "message": "Great! Let's get back to it, refreshed and focused!",
+            "message": "You\u2019re refreshed now! Go enjoy your life!",
+            "image": "1.png",
+            "sound": "sound_10.mp3",
+            "sound_repeat": 3,
+            "duration_min": 2,
+            "duration_sec": 0
+        },
+        {
+            "trigger": "break_end",
+            "message": "Great! Let\u2019s get back to it, refreshed and focused!",
             "image": "4.png",
-            "sound": "sound_02.mp3",
-            "sound_repeat": 1,
-            "duration_min": 4,
+            "sound": "sound_06.mp3",
+            "sound_repeat": 3,
+            "duration_min": 0,
             "duration_sec": 0
         }
     ]

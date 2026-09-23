@@ -23,20 +23,38 @@
     },
     {
       "trigger": "break_end",
-      "message": "Eye break's over. Enjoy 4 minutes just for you!",
+      "message": "Let AI help — build, test, commit!",
       "image": "3.png",
-      "sound": "sound_07.mp3",
+      "sound": "sound_09.mp3",
       "sound_repeat": 1,
+      "duration_min": 2,
+      "duration_sec": 0
+    },
+    {
+      "trigger": "break_end",
+      "message": "Your eyes deserve a quick rest. Take a 60-second break!",
+      "image": "2.png",
+      "sound": "sound_05.mp3",
+      "sound_repeat": 2,
       "duration_min": 1,
       "duration_sec": 0
     },
     {
       "trigger": "break_end",
-      "message": "Great! Let's get back to it, refreshed and focused!",
+      "message": "You’re refreshed now! Go enjoy your life!",
+      "image": "1.png",
+      "sound": "sound_10.mp3",
+      "sound_repeat": 3,
+      "duration_min": 2,
+      "duration_sec": 0
+    },
+    {
+      "trigger": "break_end",
+      "message": "Great! Let’s get back to it, refreshed and focused!",
       "image": "4.png",
-      "sound": "sound_02.mp3",
-      "sound_repeat": 1,
-      "duration_min": 4,
+      "sound": "sound_06.mp3",
+      "sound_repeat": 3,
+      "duration_min": 0,
       "duration_sec": 0
     }
   ]
