@@ -81,7 +81,6 @@ CONFIG = load_config()
 MESSAGE_COLOR  = CONFIG.get("message_color", "#222222")
 FONT_NAME      = CONFIG.get("font_name", "Montserrat")
 
-# Popup opacity: value 10–100 (%) → alpha 0.10–1.00
 _opacity_pct   = CONFIG.get("popup_opacity", 100)
 POPUP_ALPHA    = max(0.10, min(1.0, _opacity_pct / 100.0))
 
@@ -98,14 +97,11 @@ else:
     WORK_TIME = (CONFIG.get("work_time_min", 25) * 60
                  + CONFIG.get("work_time_sec", 0))
 
-# Build the ordered list of break milestones from config
-# Each break_end popup carries its own duration_min / duration_sec
 BREAK_MILESTONES = [
     p for p in CONFIG.get("popups", [])
     if p.get("trigger") == "break_end"
 ]
 
-# In test mode every milestone is exactly TEST_INTERVAL seconds
 if TEST_MODE:
     MILESTONE_DURATIONS = [TEST_INTERVAL] * len(BREAK_MILESTONES)
 else:
@@ -117,13 +113,31 @@ else:
 BREAK_TIME  = sum(MILESTONE_DURATIONS)
 TOTAL_CYCLE = WORK_TIME + BREAK_TIME
 
-# Cycle alignment: snap so the last milestone popup fires on a clean clock grid
+# ──────────────────────────────────────────────────────────────────────────────
+# NEW POPUP SEQUENCE (popup fires first, then its duration elapses):
+#
+#   cycle_start
+#   │
+#   ├── fire "work_end" popup immediately          ← work phase begins
+#   │   sleep WORK_TIME
+#   │
+#   ├── fire milestone[0] popup                    ← break phase begins
+#   │   sleep MILESTONE_DURATIONS[0]
+#   │
+#   ├── fire milestone[1] popup
+#   │   sleep MILESTONE_DURATIONS[1]
+#   │
+#   └── (repeat for all milestones)
+#       → next cycle starts (fire "work_end" popup again)
+#
+# TOTAL_CYCLE = WORK_TIME + sum(MILESTONE_DURATIONS)   [unchanged]
+# ──────────────────────────────────────────────────────────────────────────────
+
 CYCLE_ALIGN = CONFIG.get("cycle_align", False) and not TEST_MODE
 
 POPUPS = CONFIG.get("popups", DEFAULT_CONFIG["popups"])
 
 def get_popup_by_trigger(trigger):
-    """Return first popup matching trigger (used for start / work_end)."""
     for p in POPUPS:
         if p.get("trigger") == trigger:
             return p
@@ -133,10 +147,6 @@ pygame.init()
 pygame.mixer.init()
 
 def play_sound_async(sound_filename, repeat=1):
-    """
-    Play any sound file from SOUNDS_DIR by filename.
-    Supports .mp3 and .wav files (sound.mp3, sound_01.mp3, sound_01.wav, etc.)
-    """
     sound_path = os.path.join(SOUNDS_DIR, sound_filename)
     def _play():
         for _ in range(repeat):
@@ -153,7 +163,6 @@ popup_queue = Queue()
 DISPLAY_TIME  = 3000
 
 def fade_in(popup, target_alpha, step=0.0):
-    """Fade in up to target_alpha (respects POPUP_ALPHA setting)."""
     if step <= target_alpha:
         popup.attributes("-alpha", step)
         popup.after(20, lambda: fade_in(popup, target_alpha, step + 0.05))
@@ -191,7 +200,6 @@ def create_popup(root, message, image_path):
     container = tk.Frame(outer_frame, bg="white", padx=10, pady=10)
     container.pack(fill="both", expand=True)
 
-    # Header
     header = tk.Frame(container, bg="white")
     header.pack(fill="x", pady=(0, 0))
 
@@ -204,10 +212,8 @@ def create_popup(root, message, image_path):
     tk.Label(header, text="EyeGuard", font=(FONT_NAME, 10),
              bg="white", fg=MESSAGE_COLOR).pack(side="left")
 
-    # Separator
     tk.Frame(container, height=1, bg="#dddddd").pack(fill="x", pady=(2, 5))
 
-    # Content
     content = tk.Frame(container, bg="white")
     content.pack(fill="both", expand=True)
 
@@ -221,13 +227,11 @@ def create_popup(root, message, image_path):
              bg="white", fg=MESSAGE_COLOR,
              wraplength=280, justify="center").pack(side="left", fill="both", expand=True)
 
-    # Footer
     tk.Label(container,
              text="Developed by Ivan Sicaja © 2026. All rights reserved.",
              font=(FONT_NAME, 8), bg="white", fg="#555555"
              ).pack(side="bottom", pady=(5, 0))
 
-    # Fade in to the configured opacity level, then fade out after display time
     fade_in(popup, POPUP_ALPHA)
     popup.after(DISPLAY_TIME + 1000, lambda: fade_out(popup, POPUP_ALPHA))
 
@@ -259,59 +263,67 @@ def fire_popup(trigger=None, popup_data=None):
         )
 
 def seconds_since_midnight():
-    """Current local time expressed as seconds since 00:00:00 today."""
     t = time.localtime()
     return t.tm_hour * 3600 + t.tm_min * 60 + t.tm_sec
 
-
 def find_aligned_cycle_start_wall():
     """
-    Work backwards from the next valid grid boundary to find the wall-clock
-    time at which the aligned cycle should START (= when work phase begins).
+    With the new popup-first model the "boundary" is still the point where the
+    last milestone popup FIRED (not ended).  The grid is the same: multiples of
+    TOTAL_CYCLE anchored to midnight.
 
-    Grid boundaries are multiples of TOTAL_CYCLE anchored to midnight, e.g.
-    for a 30-minute cycle: 00:00, 00:30, 01:00, … 08:00, 08:30, 09:00 …
+    We find the NEXT boundary that is at least 1 second in the future, then
+    work out where the cycle START must have been so that the last milestone
+    fires exactly on that boundary.
 
-    The boundary we pick is the FIRST one that satisfies:
-        boundary_wall_time >= now  (the last milestone hasn't fired yet)
-
-    If now is already past a boundary (e.g. the last milestone for the 08:30
-    boundary should have fired at 08:30 but it's now 08:32), we move to the
-    NEXT boundary (09:00) automatically.
-
-    Returns (cycle_start_wall, boundary_wall) as time.time() values.
+    Returns (cycle_start_wall, last_milestone_fire_wall).
     """
     import math
 
     now_wall = time.time()
-    now_sm   = seconds_since_midnight()   # seconds since midnight right now
-
-    # Midnight as a wall-clock timestamp
+    now_sm   = seconds_since_midnight()
     midnight_wall = now_wall - now_sm
 
-    # Candidate boundary index: ceil so boundary >= now
-    candidate_idx = math.ceil(now_sm / TOTAL_CYCLE)
-    # Ensure the boundary is strictly in the future (>=1 second away),
-    # because if we're right on a boundary the popup has just fired.
-    boundary_sm   = candidate_idx * TOTAL_CYCLE
-    boundary_wall = midnight_wall + boundary_sm
+    candidate_idx  = math.ceil(now_sm / TOTAL_CYCLE)
+    boundary_sm    = candidate_idx * TOTAL_CYCLE
+    boundary_wall  = midnight_wall + boundary_sm
 
     if boundary_wall <= now_wall + 1:
-        # Already at or past this boundary — use next one
         candidate_idx += 1
         boundary_sm    = candidate_idx * TOTAL_CYCLE
         boundary_wall  = midnight_wall + boundary_sm
 
-    # Cycle starts TOTAL_CYCLE seconds before the boundary
-    cycle_start_wall = boundary_wall - TOTAL_CYCLE
+    # In the new model:
+    #   cycle_start → fire work_end → sleep WORK_TIME
+    #               → fire milestone[0] → sleep DUR[0]
+    #               → fire milestone[1] → sleep DUR[1]
+    #               → ...
+    #               → fire milestone[-1]   ← this is the boundary
+    #
+    # So:  boundary = cycle_start + WORK_TIME + sum(DUR[:-1])
+    # i.e. boundary = cycle_start + TOTAL_CYCLE - MILESTONE_DURATIONS[-1]
+    #
+    # Wait — for alignment we snap the LAST milestone FIRE to the boundary,
+    # not the end of the cycle.  The "end of cycle" is boundary + last_dur.
+    # But conventionally the user expects "snaps to :00/:30 clock marks",
+    # meaning the *work_end* popup fires on those marks (start of break).
+    # We keep the same convention: the last milestone *fires* on the boundary,
+    # which is the same as before.
+    last_fire_wall   = boundary_wall
+    cycle_start_wall = last_fire_wall - WORK_TIME - sum(MILESTONE_DURATIONS[:-1])
 
-    return cycle_start_wall, boundary_wall
-
+    return cycle_start_wall, last_fire_wall
 
 def fmt_wall(wall_time):
-    """Format a wall-clock timestamp as HH:MM:SS."""
     return time.strftime('%H:%M:%S', time.localtime(wall_time))
 
+def _precise_sleep(target_perf):
+    """Sleep until time.perf_counter() reaches target_perf, using sub-0.5 s slices."""
+    while True:
+        rem = target_perf - time.perf_counter()
+        if rem <= 0:
+            break
+        time.sleep(min(rem, 0.5))
 
 def timer_thread():
     mode = "TEST" if TEST_MODE else "PRODUCTION"
@@ -328,131 +340,124 @@ def timer_thread():
               f"Total: {TOTAL_CYCLE}s")
     print(f"Popup opacity: {_opacity_pct}%")
     print(f"Cycle alignment: {'ON' if CYCLE_ALIGN else 'OFF'}")
+    print()
+    print("NEW SEQUENCE per cycle:")
+    print("  fire work_end popup → sleep WORK_TIME")
+    for i, dur in enumerate(MILESTONE_DURATIONS):
+        print(f"  fire milestone[{i+1}] popup → sleep {dur}s")
     print("=" * 60)
 
-    # ── Start popup (always fires immediately) ────────────────────────
+    # ── On-start popup fires once immediately on launch ───────────────
     fire_popup("start")
 
     # ──────────────────────────────────────────────────────────────────
     # ALIGNED FIRST CYCLE
     # ──────────────────────────────────────────────────────────────────
     if CYCLE_ALIGN:
-        cycle_start_wall, boundary_wall = find_aligned_cycle_start_wall()
+        cycle_start_wall, last_fire_wall = find_aligned_cycle_start_wall()
         now_wall = time.time()
 
-        print(f"\n[ALIGN] Target boundary (last milestone fires): {fmt_wall(boundary_wall)}")
-        print(f"[ALIGN] Aligned cycle start: {fmt_wall(cycle_start_wall)}")
-
-        # Build absolute wall-clock targets for every event in this first cycle
-        # working BACKWARDS from the boundary
+        # Derive absolute wall-clock fire times for every event:
+        #   work_end fires at: cycle_start_wall  (first event of cycle)
+        #   milestone[i] fires at: cycle_start_wall + WORK_TIME + sum(DUR[:i])
+        work_end_fire_wall = cycle_start_wall
         milestone_fire_walls = []
-        t = boundary_wall
-        for dur in reversed(MILESTONE_DURATIONS):
-            milestone_fire_walls.insert(0, t)
-            t -= dur
-        work_end_wall = boundary_wall - BREAK_TIME  # = cycle_start_wall + WORK_TIME
+        t = cycle_start_wall + WORK_TIME
+        for dur in MILESTONE_DURATIONS:
+            milestone_fire_walls.append(t)
+            t += dur
 
-        # Log the full schedule
-        print(f"[ALIGN] Work End  fires at: {fmt_wall(work_end_wall)}")
+        print(f"\n[ALIGN] Last milestone fires at: {fmt_wall(last_fire_wall)}")
+        print(f"[ALIGN] Aligned cycle start:     {fmt_wall(cycle_start_wall)}")
+        print(f"[ALIGN] Work End fires at:        {fmt_wall(work_end_fire_wall)}")
         for i, fw in enumerate(milestone_fire_walls):
-            print(f"[ALIGN] Milestone {i+1} fires at: {fmt_wall(fw)}")
+            print(f"[ALIGN] Milestone {i+1} fires at:  {fmt_wall(fw)}")
 
-        # --- Work phase ---
-        if work_end_wall > now_wall:
-            wait = work_end_wall - now_wall
-            print(f"[ALIGN] Waiting {wait:.1f}s for Work End at {fmt_wall(work_end_wall)}")
+        # ── Work End popup (may fire immediately if already past target) ──
+        if work_end_fire_wall > now_wall:
+            wait   = work_end_fire_wall - now_wall
             end_pc = time.perf_counter() + wait
-            while True:
-                rem = end_pc - time.perf_counter()
-                if rem <= 0:
-                    break
-                time.sleep(min(rem, 0.5))
-        else:
-            print(f"[ALIGN] Work End already past ({fmt_wall(work_end_wall)}), skipping directly to milestones")
+            print(f"[ALIGN] Waiting {wait:.1f}s for Work End at {fmt_wall(work_end_fire_wall)}")
+            _precise_sleep(end_pc)
 
-        print(f"[WORK END] {format_time_from_timestamp(time.time())} "
-              f"(target {fmt_wall(work_end_wall)})")
+        print(f"[WORK END  POPUP] {format_time_from_timestamp(time.time())} "
+              f"(target {fmt_wall(work_end_fire_wall)})")
         fire_popup("work_end")
 
-        # --- Milestone phases ---
+        # ── Milestone popups ─────────────────────────────────────────
         for idx, (milestone, fire_wall) in enumerate(
                 zip(BREAK_MILESTONES, milestone_fire_walls)):
             now_wall = time.time()
             if fire_wall > now_wall:
-                wait   = fire_wall - now_wall
-                end_pc = time.perf_counter() + wait
-                while True:
-                    rem = end_pc - time.perf_counter()
-                    if rem <= 0:
-                        break
-                    time.sleep(min(rem, 0.5))
+                end_pc = time.perf_counter() + (fire_wall - now_wall)
+                _precise_sleep(end_pc)
 
-            actual_drift = time.time() - fire_wall
-            print(f"[MILESTONE {idx+1} END] {format_time_from_timestamp(time.time())} "
-                  f"(target {fmt_wall(fire_wall)} | drift {actual_drift:+.3f}s)")
+            drift = time.time() - fire_wall
+            print(f"[MILESTONE {idx+1} POPUP] {format_time_from_timestamp(time.time())} "
+                  f"(target {fmt_wall(fire_wall)} | drift {drift:+.3f}s)")
             fire_popup(popup_data=milestone)
 
+        # After aligned first cycle the next cycle starts after the last
+        # milestone's duration has elapsed (= last_fire_wall + last_dur)
+        last_dur = MILESTONE_DURATIONS[-1] if MILESTONE_DURATIONS else 0
+        next_cycle_start_wall = last_fire_wall + last_dur
         print(f"[ALIGN] Aligned cycle complete. "
-              f"Last milestone fired at {format_time_from_timestamp(time.time())}")
+              f"Next cycle starts at {fmt_wall(next_cycle_start_wall)}")
 
-        # After aligned first cycle, all subsequent cycles run normally
-        # starting exactly at boundary_wall
-        first_normal_cycle_start_wall = boundary_wall
-
-    # ──────────────────────────────────────────────────────────────────
-    # NORMAL CYCLE LOOP (unaligned, or continuing after aligned first cycle)
-    # ──────────────────────────────────────────────────────────────────
-    cycle_number = 1 if not CYCLE_ALIGN else 2
-
-    # For the first normal cycle: if aligned, we start exactly at boundary;
-    # if not aligned, we start right now.
-    if CYCLE_ALIGN:
-        # Sleep precisely until boundary_wall before starting next cycle
-        now_wall = time.time()
-        gap = first_normal_cycle_start_wall - now_wall
+        # Sleep until the next cycle boundary
+        gap = next_cycle_start_wall - time.time()
         if gap > 0:
-            end_pc = time.perf_counter() + gap
-            while True:
-                rem = end_pc - time.perf_counter()
-                if rem <= 0:
-                    break
-                time.sleep(min(rem, 0.5))
+            _precise_sleep(time.perf_counter() + gap)
 
+        cycle_number = 2
+    else:
+        cycle_number = 1
+
+    # ──────────────────────────────────────────────────────────────────
+    # NORMAL CYCLE LOOP
+    # ──────────────────────────────────────────────────────────────────
     while True:
-        cycle_start = time.perf_counter()
-        wall_start  = time.time()
-        print(f"\n[CYCLE {cycle_number} START] {format_time_from_timestamp(wall_start)}")
+        cycle_start_pc  = time.perf_counter()
+        cycle_start_wall = time.time()
+        print(f"\n[CYCLE {cycle_number} START] {format_time_from_timestamp(cycle_start_wall)}")
 
-        # Work phase
-        work_target = cycle_start + WORK_TIME
-        sleep_dur   = work_target - time.perf_counter()
-        if sleep_dur > 0:
-            time.sleep(sleep_dur)
-        elapsed = time.perf_counter() - cycle_start
-        drift   = elapsed - WORK_TIME
-        print(f"[WORK END]  {format_time_from_timestamp(time.time())} | "
-              f"expected +{WORK_TIME:.3f}s | actual +{elapsed:.3f}s | "
-              f"drift {drift:+.6f}s")
+        # ── 1. Fire "Work End" popup immediately → signals start of work phase ──
+        print(f"[WORK END  POPUP] {format_time_from_timestamp(time.time())} | "
+              f"work phase begins ({WORK_TIME}s)")
         fire_popup("work_end")
 
-        # Milestone phases
+        # ── 2. Sleep for the full work duration ──────────────────────
+        work_target_pc = cycle_start_pc + WORK_TIME
+        _precise_sleep(work_target_pc)
+
+        elapsed = time.perf_counter() - cycle_start_pc
+        drift   = elapsed - WORK_TIME
+        print(f"[WORK END  SLEEP] {format_time_from_timestamp(time.time())} | "
+              f"expected +{WORK_TIME:.3f}s | actual +{elapsed:.3f}s | drift {drift:+.6f}s")
+
+        # ── 3. Fire each milestone popup then sleep its duration ──────
         accum = WORK_TIME
         for idx, (milestone, dur) in enumerate(
                 zip(BREAK_MILESTONES, MILESTONE_DURATIONS)):
-            accum    += dur
-            ms_target = cycle_start + accum
-            sleep_dur = ms_target - time.perf_counter()
-            if sleep_dur > 0:
-                time.sleep(sleep_dur)
-            elapsed = time.perf_counter() - cycle_start
-            drift   = elapsed - accum
-            print(f"[MILESTONE {idx+1} END]  "
-                  f"{format_time_from_timestamp(time.time())} | "
-                  f"expected +{accum:.3f}s | actual +{elapsed:.3f}s | "
-                  f"drift {drift:+.6f}s")
+
+            ms_fire_pc = time.perf_counter()
+            elapsed_at_fire = ms_fire_pc - cycle_start_pc
+            print(f"[MILESTONE {idx+1} POPUP] {format_time_from_timestamp(time.time())} | "
+                  f"break phase {idx+1} begins ({dur}s) | "
+                  f"cycle elapsed +{elapsed_at_fire:.3f}s")
             fire_popup(popup_data=milestone)
 
-        cycle_elapsed = time.perf_counter() - cycle_start
+            accum         += dur
+            ms_target_pc   = cycle_start_pc + accum
+            _precise_sleep(ms_target_pc)
+
+            elapsed = time.perf_counter() - cycle_start_pc
+            drift   = elapsed - accum
+            print(f"[MILESTONE {idx+1} SLEEP] {format_time_from_timestamp(time.time())} | "
+                  f"expected +{accum:.3f}s | actual +{elapsed:.3f}s | drift {drift:+.6f}s")
+
+        # ── 4. Cycle summary ─────────────────────────────────────────
+        cycle_elapsed = time.perf_counter() - cycle_start_pc
         cycle_drift   = cycle_elapsed - TOTAL_CYCLE
         print(f"[CYCLE {cycle_number} END]  "
               f"{format_time_from_timestamp(time.time())} | "

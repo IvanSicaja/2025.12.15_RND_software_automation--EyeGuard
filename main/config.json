@@ -2,7 +2,7 @@
   "work_time_min": 25,
   "work_time_sec": 0,
   "popup_opacity": 100,
-  "test_mode": false,
+  "test_mode": true,
   "cycle_align": true,
   "font_name": "Montserrat",
   "message_color": "#222222",

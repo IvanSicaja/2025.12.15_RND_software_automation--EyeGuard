@@ -57,7 +57,7 @@ CUSTOM_SOUND_LABEL = "➕  Add custom sound…"
 FIXED_TRIGGERS = ["start", "work_end"]
 TRIGGER_LABELS = {
     "start":    "On Start",
-    "work_end": "Work End",
+    "work_end": "Work Time  ⏱  (popup fires → then wait this long)",
 }
 
 DEFAULT_CONFIG = {
@@ -398,17 +398,7 @@ class BreakMilestoneManager:
                   activebackground="#ffcccc", activeforeground="#990000", **bc,
                   command=lambda: self._delete_entry(entry)).pack(side="left", padx=(6, 0))
 
-        # Duration
-        r_dur = tk.Frame(card, bg=self.CARD_BG); r_dur.pack(fill="x", pady=2)
-        tk.Label(r_dur, text="Duration", font=self.FONT_MAIN,
-                 bg=self.CARD_BG, fg=self.ACCENT,
-                 width=18, anchor="w").pack(side="left")
-        _make_min_sec_widgets(r_dur, entry["duration_min"], entry["duration_sec"],
-                              bg=self.CARD_BG, font=self.FONT_MAIN)
-        tk.Label(r_dur, text="  ← shared with Timer Settings",
-                 font=("Segoe UI", 8), bg=self.CARD_BG,
-                 fg=self.FG_LIGHT).pack(side="left", padx=(6, 0))
-
+        # ── Popup content (fires first) ───────────────────────────────
         # Message
         r_msg = tk.Frame(card, bg=self.CARD_BG); r_msg.pack(fill="x", pady=2)
         tk.Label(r_msg, text="Message", font=self.FONT_MAIN,
@@ -417,20 +407,20 @@ class BreakMilestoneManager:
                  relief="solid", bd=1, highlightthickness=0
                  ).pack(side="left", fill="x", expand=True)
 
-        # Image — uses _build_image_row with custom import support
+        # Image
         r_img = tk.Frame(card, bg=self.CARD_BG); r_img.pack(fill="x", pady=2)
         tk.Label(r_img, text="Image", font=self.FONT_MAIN,
                  bg=self.CARD_BG, fg=self.FG, width=18, anchor="w").pack(side="left")
-        figures_list = list_figures()   # fresh list including any previously imported files
+        figures_list = list_figures()
         _build_image_row(r_img, entry["image"], figures_list,
                          bg=self.CARD_BG, font=self.FONT_MAIN,
                          fg=self.FG, fg_light=self.FG_LIGHT)
 
-        # Sound + Repeat — uses _build_sound_row with custom import support
+        # Sound + Repeat
         r_snd = tk.Frame(card, bg=self.CARD_BG); r_snd.pack(fill="x", pady=2)
         tk.Label(r_snd, text="Sound", font=self.FONT_MAIN,
                  bg=self.CARD_BG, fg=self.FG, width=18, anchor="w").pack(side="left")
-        sounds_list = list_sounds()   # fresh list including any previously imported files
+        sounds_list = list_sounds()
         _build_sound_row(r_snd, entry["sound"], sounds_list,
                          bg=self.CARD_BG, font=self.FONT_MAIN,
                          fg=self.FG, fg_light=self.FG_LIGHT)
@@ -439,6 +429,24 @@ class BreakMilestoneManager:
         tk.Spinbox(r_snd, from_=1, to=10, width=4, textvariable=entry["sound_repeat"],
                    font=self.FONT_MAIN, relief="solid", bd=1,
                    highlightthickness=0).pack(side="left", padx=(4, 0))
+
+        # ── Divider before duration ───────────────────────────────────
+        tk.Frame(card, height=1, bg="#c5d5f5").pack(fill="x", pady=(8, 4))
+
+        # ── Duration (wait after this popup fires) ────────────────────
+        r_dur = tk.Frame(card, bg=self.CARD_BG); r_dur.pack(fill="x", pady=(2, 0))
+        tk.Label(r_dur,
+                 text="⏳  Then wait",
+                 font=("Segoe UI Semibold", 9),
+                 bg=self.CARD_BG, fg=self.ACCENT,
+                 width=18, anchor="w").pack(side="left")
+        _make_min_sec_widgets(r_dur, entry["duration_min"], entry["duration_sec"],
+                              bg=self.CARD_BG, font=self.FONT_MAIN)
+        tk.Label(r_dur,
+                 text="  before next popup",
+                 font=("Segoe UI", 8), bg=self.CARD_BG,
+                 fg=self.FG_LIGHT).pack(side="left", padx=(6, 0))
+
         return frame
 
     def _delete_entry(self, entry):
@@ -720,10 +728,18 @@ class ConfigApp(tk.Tk):
                                    pack=True,
                                    extra_timer_var_min=None,
                                    extra_timer_var_sec=None,
-                                   extra_timer_label=None):
+                                   extra_timer_label=None,
+                                   time_only=False):
+        """
+        Build a fixed popup section.
+
+        time_only=True  →  Only a duration row is shown (no message/image/sound).
+                           Used for the Work Time block, which just defines how
+                           long the work phase lasts after the popup fires.
+        """
         section = tk.LabelFrame(
             parent,
-            text=f"  {TRIGGER_LABELS[trigger]}  ",
+            text=f"  {TRIGGER_LABELS.get(trigger, trigger)}  ",
             font=self.FONT_TITLE,
             bg=self.PANEL, fg=self.ACCENT,
             relief="groove", bd=1, padx=10, pady=8,
@@ -731,6 +747,36 @@ class ConfigApp(tk.Tk):
         if pack:
             section.pack(fill="x", pady=(0, 8), padx=2)
 
+        if time_only:
+            # ── Work Time block: duration only, clear explanatory label ──
+            info = tk.Frame(section, bg=self.PANEL)
+            info.pack(fill="x", pady=(0, 6))
+            tk.Label(
+                info,
+                text=("The Work End popup fires immediately at the start of each cycle.\n"
+                      "Set how long the work phase lasts before the first Break Milestone popup appears."),
+                font=("Segoe UI", 8), bg=self.PANEL, fg=self.FG_LIGHT,
+                justify="left", wraplength=480,
+            ).pack(anchor="w")
+
+            tk.Frame(section, height=1, bg=self.BORDER).pack(fill="x", pady=(0, 8))
+
+            t_row = tk.Frame(section, bg=self.PANEL)
+            t_row.pack(fill="x", pady=3)
+            tk.Label(t_row, text="Work Duration", font=self.FONT_MAIN,
+                     bg=self.PANEL, fg=self.FG,
+                     width=14, anchor="w").pack(side="left")
+            _make_min_sec_widgets(t_row, extra_timer_var_min, extra_timer_var_sec,
+                                  bg=self.PANEL, font=self.FONT_MAIN,
+                                  min_max=999, sec_max=59)
+            tk.Label(t_row,
+                     text="  ← also shown in Timer Settings",
+                     font=("Segoe UI", 8), bg=self.PANEL,
+                     fg=self.FG_LIGHT).pack(side="left", padx=(8, 0))
+
+            return section, None   # no popup vars for time-only block
+
+        # ── Normal popup section (message / image / sound) ────────────
         if extra_timer_var_min is not None:
             t_row = tk.Frame(section, bg=self.PANEL); t_row.pack(fill="x", pady=3)
             tk.Label(t_row, text=extra_timer_label, font=self.FONT_MAIN,
@@ -752,22 +798,20 @@ class ConfigApp(tk.Tk):
                  relief="solid", bd=1, highlightthickness=0
                  ).pack(side="left", fill="x", expand=True)
 
-        # Image — with custom import support
         ir = tk.Frame(section, bg=self.PANEL); ir.pack(fill="x", pady=3)
         tk.Label(ir, text="Image", font=self.FONT_MAIN,
                  bg=self.PANEL, fg=self.FG, width=14, anchor="w").pack(side="left")
         var_img = tk.StringVar()
-        figures_list = list_figures()   # mutable list for this row
+        figures_list = list_figures()
         _build_image_row(ir, var_img, figures_list,
                          bg=self.PANEL, font=self.FONT_MAIN,
                          fg=self.FG, fg_light=self.FG_LIGHT)
 
-        # Sound row — with custom import support + auto-play + play button
         sr = tk.Frame(section, bg=self.PANEL); sr.pack(fill="x", pady=3)
         tk.Label(sr, text="Sound", font=self.FONT_MAIN,
                  bg=self.PANEL, fg=self.FG, width=14, anchor="w").pack(side="left")
         var_snd = tk.StringVar()
-        sounds_list = list_sounds()   # mutable list for this row
+        sounds_list = list_sounds()
         _build_sound_row(sr, var_snd, sounds_list,
                          bg=self.PANEL, font=self.FONT_MAIN,
                          fg=self.FG, fg_light=self.FG_LIGHT)
@@ -1072,13 +1116,16 @@ class ConfigApp(tk.Tk):
             scroll_frame, "start", figures, sounds, pack=True)
         self._popup_frames["start"] = vars_start
 
-        _, vars_work = self._build_fixed_popup_section(
+        # Work End section: time-only — no popup fields, just the duration
+        self._build_fixed_popup_section(
             scroll_frame, "work_end", figures, sounds, pack=True,
             extra_timer_var_min=self.var_work_min,
             extra_timer_var_sec=self.var_work_sec,
             extra_timer_label="Work Time",
+            time_only=True,
         )
-        self._popup_frames["work_end"] = vars_work
+        # work_end popup content is saved/loaded directly via var_work_min / var_work_sec
+        # and the fixed DEFAULT_CONFIG work_end popup entry — no runtime widget dict needed
 
         self._milestone_manager = BreakMilestoneManager(
             scroll_frame, figures=figures, sounds=sounds,
@@ -1115,6 +1162,8 @@ class ConfigApp(tk.Tk):
         self.var_color.set(self.cfg.get("message_color", "#222222"))
 
         for trigger, widgets in self._popup_frames.items():
+            if widgets is None:
+                continue   # time-only block — no widget fields to populate
             popup = get_popup(self.cfg, trigger)
             widgets["message"].set(popup.get("message", ""))
             widgets["image"].set(popup.get("image", ""))
@@ -1138,16 +1187,27 @@ class ConfigApp(tk.Tk):
 
         popups = []
         for trigger in FIXED_TRIGGERS:
-            w = self._popup_frames[trigger]
-            try: repeat = int(w["sound_repeat"].get())
-            except ValueError: repeat = 1
-            popups.append({
-                "trigger":      trigger,
-                "message":      w["message"].get().strip(),
-                "image":        w["image"].get().strip(),
-                "sound":        w["sound"].get().strip(),
-                "sound_repeat": max(1, repeat),
-            })
+            w = self._popup_frames.get(trigger)
+            if w is None:
+                # time-only block (work_end): preserve existing popup data from cfg
+                existing = get_popup(self.cfg, trigger)
+                popups.append({
+                    "trigger":      trigger,
+                    "message":      existing.get("message", ""),
+                    "image":        existing.get("image", ""),
+                    "sound":        existing.get("sound", ""),
+                    "sound_repeat": existing.get("sound_repeat", 1),
+                })
+            else:
+                try: repeat = int(w["sound_repeat"].get())
+                except ValueError: repeat = 1
+                popups.append({
+                    "trigger":      trigger,
+                    "message":      w["message"].get().strip(),
+                    "image":        w["image"].get().strip(),
+                    "sound":        w["sound"].get().strip(),
+                    "sound_repeat": max(1, repeat),
+                })
         popups.extend(self._milestone_manager.collect_milestones())
 
         return {

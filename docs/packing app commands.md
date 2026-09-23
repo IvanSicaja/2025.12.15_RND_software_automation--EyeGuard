@@ -10,9 +10,9 @@ Get-ChildItem -Path .\publish -Recurse | Where-Object { $_.Extension -ne '.exe' 
 ------------------------------------------------------------------------------------------------------------------------
 configurator.py
 
-3. Create a standalone executable with icon
+5. Create a standalone executable with icon
 pyinstaller --onefile --windowed --name EyeGuard --icon=..\assets\media\icons\icon.ico --distpath publish --workpath publish\build --specpath publish --add-data "../assets/media/sounds;assets/media/sounds" --add-data "../assets/media/icons;assets/media/icons" --add-data "../assets/media/figures;assets/media/figures" main\main.py
 pyinstaller --onefile --windowed --name EyeGuardConfigurator --icon=..\assets\media\icons\icon.ico --distpath publish --workpath publish\build --specpath publish --add-data "../assets/media/sounds;assets/media/sounds" --add-data "../assets/media/icons;assets/media/icons" --add-data "../assets/media/figures;assets/media/figures" main\configurator.py
 
-4. Optional for removing non necessary files -> run in pycharm terminal
+6. Optional for removing non necessary files -> run in pycharm terminal
 Get-ChildItem -Path .\publish -Recurse | Where-Object { $_.Extension -ne '.exe' } | Remove-Item -Force -Recurse
