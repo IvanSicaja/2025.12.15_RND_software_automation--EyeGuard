@@ -156,7 +156,8 @@ TOTAL_CYCLE = WORK_TIME + BREAK_TIME
 #
 #   cycle_start
 #   │
-#   ├── fire "work_end" popup immediately          ← work phase begins
+#   ├── work phase begins SILENTLY (no popup, no sound — the Cycle End
+#   │   popup that just fired is the only thing the user sees/hears)
 #   │   sleep WORK_TIME
 #   │
 #   ├── fire milestone[0] popup                    ← break phase begins
@@ -166,7 +167,10 @@ TOTAL_CYCLE = WORK_TIME + BREAK_TIME
 #   │   sleep MILESTONE_DURATIONS[1]
 #   │
 #   └── (repeat for all milestones)
-#       → next cycle starts (fire "work_end" popup again)
+#       → next cycle starts (silently — see above)
+#
+# The "start" popup is the APP-START notice only (launch / unlock / wake).
+# It is never part of the cycle.
 #
 # TOTAL_CYCLE = WORK_TIME + sum(MILESTONE_DURATIONS)   [unchanged]
 # ──────────────────────────────────────────────────────────────────────────────
@@ -380,12 +384,13 @@ def timer_thread():
     print(f"Cycle alignment: {'ON' if CYCLE_ALIGN else 'OFF'}")
     print()
     print("NEW SEQUENCE per cycle:")
-    print("  fire work_end popup → sleep WORK_TIME")
+    print("  work phase (silent) → sleep WORK_TIME")
     for i, dur in enumerate(MILESTONE_DURATIONS):
         print(f"  fire milestone[{i+1}] popup → sleep {dur}s")
     print("=" * 60)
 
-    # ── On-start popup fires once immediately on launch ───────────────
+    # ── App-start popup fires once immediately on launch ──────────────
+    # (informational only: tells the user EyeGuard is running)
     fire_popup("start")
 
     # ──────────────────────────────────────────────────────────────────
@@ -418,9 +423,10 @@ def timer_thread():
             print(f"[ALIGN] Waiting {wait:.1f}s for Work End at {fmt_wall(work_end_fire_wall)}")
             _precise_sleep(end_pc)
 
-        print(f"[WORK END  POPUP] {format_time_from_timestamp(time.time())} "
+        # Work phase starts silently — no popup/sound here, so nothing can
+        # overlap the App-Start or Cycle End popups.
+        print(f"[WORK PHASE START] {format_time_from_timestamp(time.time())} "
               f"(target {fmt_wall(work_end_fire_wall)})")
-        fire_popup("work_end")
 
         # ── Milestone popups ─────────────────────────────────────────
         for idx, (milestone, fire_wall) in enumerate(
@@ -459,10 +465,12 @@ def timer_thread():
         cycle_start_wall = time.time()
         print(f"\n[CYCLE {cycle_number} START] {format_time_from_timestamp(cycle_start_wall)}")
 
-        # ── 1. Fire "Work End" popup immediately → signals start of work phase ──
-        print(f"[WORK END  POPUP] {format_time_from_timestamp(time.time())} | "
+        # ── 1. Work phase begins silently ─────────────────────────────
+        # No popup and no sound here: the Cycle End popup (last break
+        # milestone, 0 s duration) fires at this exact moment, and it must
+        # be the ONLY thing the user sees and hears at the end of a cycle.
+        print(f"[WORK PHASE START] {format_time_from_timestamp(time.time())} | "
               f"work phase begins ({WORK_TIME}s)")
-        fire_popup("work_end")
 
         # ── 2. Sleep for the full work duration ──────────────────────
         work_target_pc = cycle_start_pc + WORK_TIME
@@ -556,11 +564,11 @@ def _register_session_notifications(root):
                 def _wnd_proc(hwnd_, msg, wparam, lparam):
                     if msg == WM_WTSSESSION_CHANGE:
                         if wparam == WTS_SESSION_UNLOCK:
-                            print("[SESSION] Unlock detected — firing On-Start popup")
+                            print("[SESSION] Unlock detected — firing App-Start popup")
                             fire_popup("start")
                     elif msg == WM_POWERBROADCAST:
                         if wparam in (PBT_APMRESUMESUSPEND, PBT_APMRESUMEAUTOMATIC):
-                            print("[POWER] Resume from sleep detected — firing On-Start popup")
+                            print("[POWER] Resume from sleep detected — firing App-Start popup")
                             fire_popup("start")
                     # Call the original window proc
                     return ctypes.windll.user32.CallWindowProcW(
