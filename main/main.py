@@ -10,26 +10,6 @@ import threading
 import json
 from queue import Queue
 
-# ── Windows session / power event constants ───────────────────────────────────
-# Used to detect lock/unlock and sleep/wake so the On-Start popup can fire.
-try:
-    import ctypes.wintypes as _wintypes
-    _WTSAPI32     = ctypes.windll.WtsApi32
-    _USER32       = ctypes.windll.user32
-    _WTS_NOTIFY   = True
-except Exception:
-    _WTS_NOTIFY   = False
-
-# Session-change notification codes (WM_WTSSESSION_CHANGE wParam)
-WTS_SESSION_LOCK       = 0x7
-WTS_SESSION_UNLOCK     = 0x8
-WM_WTSSESSION_CHANGE   = 0x02B1
-
-# Power-broadcast event codes (WM_POWERBROADCAST wParam)
-PBT_APMRESUMESUSPEND      = 0x0007   # resume from suspend (user present)
-PBT_APMRESUMEAUTOMATIC    = 0x0012   # resume from suspend (automatic)
-WM_POWERBROADCAST         = 0x0218
-
 # ====================== BASE PATH ======================
 if getattr(sys, 'frozen', False):
     BASE_DIR = sys._MEIPASS
@@ -156,8 +136,7 @@ TOTAL_CYCLE = WORK_TIME + BREAK_TIME
 #
 #   cycle_start
 #   │
-#   ├── work phase begins SILENTLY (no popup, no sound — the Cycle End
-#   │   popup that just fired is the only thing the user sees/hears)
+#   ├── fire "work_end" popup immediately          ← work phase begins
 #   │   sleep WORK_TIME
 #   │
 #   ├── fire milestone[0] popup                    ← break phase begins
@@ -167,10 +146,7 @@ TOTAL_CYCLE = WORK_TIME + BREAK_TIME
 #   │   sleep MILESTONE_DURATIONS[1]
 #   │
 #   └── (repeat for all milestones)
-#       → next cycle starts (silently — see above)
-#
-# The "start" popup is the APP-START notice only (launch / unlock / wake).
-# It is never part of the cycle.
+#       → next cycle starts (fire "work_end" popup again)
 #
 # TOTAL_CYCLE = WORK_TIME + sum(MILESTONE_DURATIONS)   [unchanged]
 # ──────────────────────────────────────────────────────────────────────────────
@@ -384,13 +360,12 @@ def timer_thread():
     print(f"Cycle alignment: {'ON' if CYCLE_ALIGN else 'OFF'}")
     print()
     print("NEW SEQUENCE per cycle:")
-    print("  work phase (silent) → sleep WORK_TIME")
+    print("  fire work_end popup → sleep WORK_TIME")
     for i, dur in enumerate(MILESTONE_DURATIONS):
         print(f"  fire milestone[{i+1}] popup → sleep {dur}s")
     print("=" * 60)
 
-    # ── App-start popup fires once immediately on launch ──────────────
-    # (informational only: tells the user EyeGuard is running)
+    # ── On-start popup fires once immediately on launch ───────────────
     fire_popup("start")
 
     # ──────────────────────────────────────────────────────────────────
@@ -423,10 +398,9 @@ def timer_thread():
             print(f"[ALIGN] Waiting {wait:.1f}s for Work End at {fmt_wall(work_end_fire_wall)}")
             _precise_sleep(end_pc)
 
-        # Work phase starts silently — no popup/sound here, so nothing can
-        # overlap the App-Start or Cycle End popups.
-        print(f"[WORK PHASE START] {format_time_from_timestamp(time.time())} "
+        print(f"[WORK END  POPUP] {format_time_from_timestamp(time.time())} "
               f"(target {fmt_wall(work_end_fire_wall)})")
+        fire_popup("work_end")
 
         # ── Milestone popups ─────────────────────────────────────────
         for idx, (milestone, fire_wall) in enumerate(
@@ -465,12 +439,10 @@ def timer_thread():
         cycle_start_wall = time.time()
         print(f"\n[CYCLE {cycle_number} START] {format_time_from_timestamp(cycle_start_wall)}")
 
-        # ── 1. Work phase begins silently ─────────────────────────────
-        # No popup and no sound here: the Cycle End popup (last break
-        # milestone, 0 s duration) fires at this exact moment, and it must
-        # be the ONLY thing the user sees and hears at the end of a cycle.
-        print(f"[WORK PHASE START] {format_time_from_timestamp(time.time())} | "
+        # ── 1. Fire "Work End" popup immediately → signals start of work phase ──
+        print(f"[WORK END  POPUP] {format_time_from_timestamp(time.time())} | "
               f"work phase begins ({WORK_TIME}s)")
+        fire_popup("work_end")
 
         # ── 2. Sleep for the full work duration ──────────────────────
         work_target_pc = cycle_start_pc + WORK_TIME
@@ -516,77 +488,7 @@ def main():
     root.withdraw()
     check_popup_queue(root)
     threading.Thread(target=timer_thread, daemon=True).start()
-
-    # ── Register for Windows session-change and power notifications ───────────
-    # This lets the On-Start popup fire when the PC is unlocked or wakes from
-    # sleep/hibernate, without touching the timer cycle at all.
-    if _WTS_NOTIFY:
-        _register_session_notifications(root)
-
     root.mainloop()
-
-
-# ── Windows session / power notification hook ─────────────────────────────────
-
-def _register_session_notifications(root):
-    """
-    Subclass the hidden Tk root HWND to intercept WM_WTSSESSION_CHANGE and
-    WM_POWERBROADCAST messages.  When the session is unlocked or the machine
-    resumes from sleep, fire the On-Start popup once.
-
-    Safe to call on any version of Windows; silently does nothing if the
-    required APIs are not available.
-    """
-    try:
-        import ctypes
-        import ctypes.wintypes as wt
-
-        # Give the hidden Tk window a moment to get an HWND
-        def _setup():
-            try:
-                hwnd = root.winfo_id()
-
-                # Register for session-change notifications
-                ctypes.windll.WtsApi32.WTSRegisterSessionNotification(hwnd, 0)
-
-                # Subclass the window proc
-                WndProcType = ctypes.WINFUNCTYPE(
-                    ctypes.c_long,          # return type
-                    wt.HWND,
-                    wt.UINT,
-                    wt.WPARAM,
-                    wt.LPARAM,
-                )
-
-                # Keep a reference so GC never kills the callback
-                root._old_wnd_proc = ctypes.windll.user32.GetWindowLongPtrW(hwnd, -4)
-
-                def _wnd_proc(hwnd_, msg, wparam, lparam):
-                    if msg == WM_WTSSESSION_CHANGE:
-                        if wparam == WTS_SESSION_UNLOCK:
-                            print("[SESSION] Unlock detected — firing App-Start popup")
-                            fire_popup("start")
-                    elif msg == WM_POWERBROADCAST:
-                        if wparam in (PBT_APMRESUMESUSPEND, PBT_APMRESUMEAUTOMATIC):
-                            print("[POWER] Resume from sleep detected — firing App-Start popup")
-                            fire_popup("start")
-                    # Call the original window proc
-                    return ctypes.windll.user32.CallWindowProcW(
-                        root._old_wnd_proc, hwnd_, msg, wparam, lparam)
-
-                root._wnd_proc_ref = WndProcType(_wnd_proc)
-                ctypes.windll.user32.SetWindowLongPtrW(
-                    hwnd, -4, root._wnd_proc_ref)
-
-                print("[SESSION] Windows session/power notifications registered")
-            except Exception as e:
-                print(f"[SESSION] Could not register notifications: {e}")
-
-        # Delay slightly so Tk has fully created the window
-        root.after(500, _setup)
-
-    except Exception as e:
-        print(f"[SESSION] Notification setup skipped: {e}")
 
 if __name__ == "__main__":
     main()

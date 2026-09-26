@@ -1280,11 +1280,6 @@ class ConfigApp(tk.Tk):
                   activebackground="#1558b0", activeforeground="white",
                   command=self._save, **bs).pack(side="right")
 
-        tk.Button(btn_bar, text="↺  Load Configuration",
-                  bg="#e8eaed", fg=self.FG,
-                  activebackground="#d2d5db", activeforeground=self.FG,
-                  command=self._load_from_disk, **bs).pack(side="right", padx=(0, 8))
-
         tk.Label(self,
                  text="Developed by Ivan Sicaja © 2026. All rights reserved.",
                  font=("Segoe UI", 8), bg=self.BG, fg="#aaaaaa").pack(pady=(0, 6))
@@ -1376,24 +1371,6 @@ class ConfigApp(tk.Tk):
             messagebox.showinfo("Saved",
                                 f"Configuration saved to:\n{CONFIG_PATH}\n\n"
                                 "Restart EyeGuard for changes to take effect.")
-
-    def _load_from_disk(self):
-        """Reload config.json from the exe/script folder and repopulate all fields."""
-        cfg = load_config()
-        if load_config.error:
-            messagebox.showerror(
-                "Load Error",
-                f"Could not read config.json:\n{load_config.error}\n\nUsing defaults.")
-        if not os.path.exists(CONFIG_PATH):
-            messagebox.showinfo(
-                "No Configuration Found",
-                f"No config.json found at:\n{CONFIG_PATH}\n\n"
-                "The form has been filled with default values.")
-        self.cfg = cfg
-        self._populate()
-        messagebox.showinfo(
-            "Configuration Loaded",
-            f"Configuration loaded from:\n{CONFIG_PATH}")
 
     def _reset(self):
         if messagebox.askyesno("Reset", "Reset all settings to defaults?"):
