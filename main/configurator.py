@@ -54,14 +54,19 @@ ALLOWED_SOUND_EXTS = (".mp3", ".wav")
 CUSTOM_IMAGE_LABEL = "➕  Add custom image…"
 CUSTOM_SOUND_LABEL = "➕  Add custom sound…"
 
-FIXED_TRIGGERS = ["start", "work_end"]
+# Trigger names written to / read from config.json
+START_TRIGGER     = "om_start"      # fires ONLY ONCE when EyeGuard starts
+MILESTONE_PREFIX  = "milestone_"    # milestone_1, milestone_2, … (every cycle)
+CYCLE_END_TRIGGER = "cycle_end"     # last popup of every cycle
+
+FIXED_TRIGGERS = [START_TRIGGER]
 TRIGGER_LABELS = {
-    "start":    "On Start",
-    "work_end": "Work Time  ⏱  (popup fires → then wait this long)",
+    START_TRIGGER: "On Start",
+    "work_end":    "Work Time  ⏱  (work phase → then first milestone)",
 }
 
 DEFAULT_CONFIG = {
-    "work_time_min":  24,
+    "work_time_min":  25,
     "work_time_sec":   0,
     "popup_opacity": 100,
     "test_mode":   False,
@@ -69,12 +74,11 @@ DEFAULT_CONFIG = {
     "font_name":   "Montserrat",
     "message_color": "#222222",
     "popups": [
-        {"trigger": "start",     "message": "EyeGuard is now active \u2014 helping you care for your eyes!", "image": "1.png", "sound": "sound_01.mp3", "sound_repeat": 1},
-        {"trigger": "work_end",  "message": "Your eyes deserve a quick rest. Take a 30-second break!",       "image": "2.png", "sound": "sound_04.mp3", "sound_repeat": 1},
-        {"trigger": "break_end", "message": "Let AI help \u2014 build, test, commit!",                        "image": "3.png", "sound": "sound_09.mp3", "sound_repeat": 1, "duration_min": 3, "duration_sec": 0},
-        {"trigger": "break_end", "message": "Your eyes deserve a quick rest. Take a 60-second break!",       "image": "2.png", "sound": "sound_05.mp3", "sound_repeat": 2, "duration_min": 1, "duration_sec": 0},
-        {"trigger": "break_end", "message": "You\u2019re refreshed now! Go enjoy your life!",                 "image": "1.png", "sound": "sound_10.mp3", "sound_repeat": 3, "duration_min": 2, "duration_sec": 0},
-        {"trigger": "break_end", "message": "Great! Let\u2019s get back to it, refreshed and focused!",      "image": "4.png", "sound": "sound_06.mp3", "sound_repeat": 3, "duration_min": 0, "duration_sec": 0},
+        {"trigger": "om_start",    "message": "EyeGuard is now active \u2014 helping you care for your eyes!", "image": "1.png", "sound": "sound_01.mp3", "sound_repeat": 1},
+        {"trigger": "milestone_1", "message": "Let AI help \u2014 build, test, commit!",                        "image": "3.png", "sound": "sound_09.mp3", "sound_repeat": 1, "duration_min": 2, "duration_sec": 0},
+        {"trigger": "milestone_2", "message": "Your eyes deserve a quick rest. Take a 60-second break!",       "image": "2.png", "sound": "sound_05.mp3", "sound_repeat": 2, "duration_min": 1, "duration_sec": 0},
+        {"trigger": "milestone_3", "message": "You\u2019re refreshed now! Go enjoy your life!",                 "image": "1.png", "sound": "sound_10.mp3", "sound_repeat": 3, "duration_min": 2, "duration_sec": 0},
+        {"trigger": "cycle_end",   "message": "Great! Let\u2019s get back to it, refreshed and focused!",      "image": "4.png", "sound": "sound_06.mp3", "sound_repeat": 3},
     ],
 }
 
@@ -108,6 +112,8 @@ def load_config():
                         p["trigger"]      = "break_end"
                         p["duration_min"] = free_min
                         p["duration_sec"] = 0
+            # ── Migrate old popup format (start / work_end / break_end) ──
+            _migrate_popups(cfg)
             # ── Fill any missing top-level keys with defaults ──────────
             for k, v in DEFAULT_CONFIG.items():
                 cfg.setdefault(k, v)
@@ -117,6 +123,50 @@ def load_config():
     return json.loads(json.dumps(DEFAULT_CONFIG))
 
 load_config.error = None   # initialise attribute
+
+def _migrate_popups(cfg):
+    """
+    Convert the old popup layout into the new one (in place):
+      start / on_start               → om_start
+      work_end                       → removed (Work Time has no popup)
+      break_end with a duration      → milestone_1, milestone_2, …
+      last break_end with duration 0 → cycle_end
+    Configs that already use the new layout are left untouched.
+    """
+    popups = cfg.get("popups", [])
+    triggers = [p.get("trigger") for p in popups]
+    if not any(t in ("start", "on_start", "work_end", "break_end") for t in triggers):
+        return
+    new = []
+    start = next((p for p in popups if p.get("trigger") in (START_TRIGGER, "on_start", "start")), None)
+    if start:
+        start = dict(start); start["trigger"] = START_TRIGGER
+        new.append(start)
+    breaks = [p for p in popups if p.get("trigger") == "break_end"]
+    cycle_end = None
+    for p in reversed(breaks):
+        if p.get("duration_min", 0) == 0 and p.get("duration_sec", 0) == 0:
+            cycle_end = p
+            break
+    n = 0
+    for p in breaks:
+        if p is cycle_end:
+            continue
+        n += 1
+        m = dict(p); m["trigger"] = f"{MILESTONE_PREFIX}{n}"
+        new.append(m)
+    for p in popups:   # keep already-new milestone entries, if mixed
+        if str(p.get("trigger", "")).startswith(MILESTONE_PREFIX):
+            n += 1
+            m = dict(p); m["trigger"] = f"{MILESTONE_PREFIX}{n}"
+            new.append(m)
+    if cycle_end is None:
+        cycle_end = next((p for p in popups if p.get("trigger") == CYCLE_END_TRIGGER), None)
+    if cycle_end:
+        ce = {k: v for k, v in cycle_end.items() if k not in ("duration_min", "duration_sec")}
+        ce["trigger"] = CYCLE_END_TRIGGER
+        new.append(ce)
+    cfg["popups"] = new
 
 def save_config(cfg):
     try:
@@ -144,33 +194,33 @@ def list_sounds():
     return [CUSTOM_SOUND_LABEL] + files
 
 def get_popup(cfg, trigger):
+    aliases = (START_TRIGGER, "on_start", "start") if trigger == START_TRIGGER else (trigger,)
     for p in cfg.get("popups", []):
-        if p.get("trigger") == trigger:
+        if p.get("trigger") in aliases:
             return p
     return {"trigger": trigger, "message": "", "image": "", "sound": "", "sound_repeat": 1}
 
+def _milestone_number(p):
+    try:
+        return int(str(p.get("trigger", "")).split("_", 1)[1])
+    except (IndexError, ValueError):
+        return 0
+
 def get_break_milestones(cfg):
-    """Return all break_end popups that have a non-zero duration (i.e. not the cycle-end entry)."""
-    return [p for p in cfg.get("popups", [])
-            if p.get("trigger") == "break_end"
-            and (p.get("duration_min", 0) > 0 or p.get("duration_sec", 0) > 0)]
+    """Return all milestone_N popups, ordered by N."""
+    return sorted([p for p in cfg.get("popups", [])
+                   if str(p.get("trigger", "")).startswith(MILESTONE_PREFIX)],
+                  key=_milestone_number)
 
 def get_cycle_end_popup(cfg):
     """
-    Return the last break_end popup that has duration 0 — this is the
-    'Cycle End' popup that fires last with no wait after it.
-    Falls back to the last break_end popup overall, or a blank entry.
+    Return the 'cycle_end' popup — the last popup of every cycle,
+    with no wait after it. Falls back to a blank entry.
     """
-    candidates = [p for p in cfg.get("popups", []) if p.get("trigger") == "break_end"]
-    # Prefer an explicit zero-duration entry
-    for p in reversed(candidates):
-        if p.get("duration_min", 0) == 0 and p.get("duration_sec", 0) == 0:
+    for p in cfg.get("popups", []):
+        if p.get("trigger") == CYCLE_END_TRIGGER:
             return p
-    # Otherwise use the last break_end entry as cycle-end (remove from milestones)
-    if candidates:
-        return candidates[-1]
-    return {"trigger": "break_end", "message": "", "image": "", "sound": "", "sound_repeat": 1,
-            "duration_min": 0, "duration_sec": 0}
+    return {"trigger": CYCLE_END_TRIGGER, "message": "", "image": "", "sound": "", "sound_repeat": 1}
 
 def fmt_duration(total_sec):
     """Format total seconds as  Xm Ys  string."""
@@ -598,7 +648,7 @@ class BreakMilestoneManager:
 
     def collect_milestones(self):
         result = []
-        for e in self._entries:
+        for i, e in enumerate(self._entries):
             try: repeat = int(e["sound_repeat"].get())
             except ValueError: repeat = 1
             try: dur_min = int(e["duration_min"].get())
@@ -606,7 +656,7 @@ class BreakMilestoneManager:
             try: dur_sec = int(e["duration_sec"].get())
             except ValueError: dur_sec = 30
             result.append({
-                "trigger":      "break_end",
+                "trigger":      f"{MILESTONE_PREFIX}{i + 1}",
                 "message":      e["message"].get().strip(),
                 "image":        e["image"].get().strip(),
                 "sound":        e["sound"].get().strip(),
@@ -628,13 +678,11 @@ class BreakMilestoneManager:
         try: repeat = int(v["sound_repeat"].get())
         except ValueError: repeat = 1
         return {
-            "trigger":      "break_end",
+            "trigger":      CYCLE_END_TRIGGER,
             "message":      v["message"].get().strip(),
             "image":        v["image"].get().strip(),
             "sound":        v["sound"].get().strip(),
             "sound_repeat": max(1, repeat),
-            "duration_min": 0,
-            "duration_sec": 0,
         }
 
     @property
@@ -889,7 +937,7 @@ class ConfigApp(tk.Tk):
             info.pack(fill="x", pady=(0, 6))
             tk.Label(
                 info,
-                text=("The Work End popup fires immediately at the start of each cycle.\n"
+                text=("Each cycle starts with the work phase (no popup — On Start fires only once at launch).\n"
                       "Set how long the work phase lasts before the first Break Milestone popup appears."),
                 font=("Segoe UI", 8), bg=self.PANEL, fg=self.FG_LIGHT,
                 justify="left", wraplength=480,
@@ -1249,8 +1297,8 @@ class ConfigApp(tk.Tk):
         self._popup_frames = {}
 
         _, vars_start = self._build_fixed_popup_section(
-            scroll_frame, "start", figures, sounds, pack=True)
-        self._popup_frames["start"] = vars_start
+            scroll_frame, START_TRIGGER, figures, sounds, pack=True)
+        self._popup_frames[START_TRIGGER] = vars_start
 
         # Work End section: time-only — no popup fields, just the duration
         self._build_fixed_popup_section(
@@ -1260,8 +1308,7 @@ class ConfigApp(tk.Tk):
             extra_timer_label="Work Time",
             time_only=True,
         )
-        # work_end popup content is saved/loaded directly via var_work_min / var_work_sec
-        # and the fixed DEFAULT_CONFIG work_end popup entry — no runtime widget dict needed
+        # Work Time has no popup — only work_time_min / work_time_sec are saved
 
         self._milestone_manager = BreakMilestoneManager(
             scroll_frame, figures=figures, sounds=sounds,
@@ -1308,9 +1355,7 @@ class ConfigApp(tk.Tk):
 
         milestones = get_break_milestones(self.cfg)
         if not milestones:
-            milestones = [p for p in DEFAULT_CONFIG["popups"]
-                          if p["trigger"] == "break_end"
-                          and (p.get("duration_min", 0) > 0 or p.get("duration_sec", 0) > 0)]
+            milestones = get_break_milestones(DEFAULT_CONFIG)
         self._milestone_manager.load_milestones(milestones)
 
         cycle_end = get_cycle_end_popup(self.cfg)
@@ -1329,15 +1374,7 @@ class ConfigApp(tk.Tk):
         for trigger in FIXED_TRIGGERS:
             w = self._popup_frames.get(trigger)
             if w is None:
-                # time-only block (work_end): preserve existing popup data from cfg
-                existing = get_popup(self.cfg, trigger)
-                popups.append({
-                    "trigger":      trigger,
-                    "message":      existing.get("message", ""),
-                    "image":        existing.get("image", ""),
-                    "sound":        existing.get("sound", ""),
-                    "sound_repeat": existing.get("sound_repeat", 1),
-                })
+                continue   # time-only block — nothing to save as popup
             else:
                 try: repeat = int(w["sound_repeat"].get())
                 except ValueError: repeat = 1

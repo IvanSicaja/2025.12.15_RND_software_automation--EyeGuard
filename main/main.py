@@ -19,79 +19,27 @@ else:
 # ====================== LOAD CONFIG ======================
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "config.json")
 
-DEFAULT_CONFIG = {
-    "work_time_min":  24,
-    "work_time_sec":   0,
-    "popup_opacity": 100,
-    "test_mode":   False,
-    "cycle_align":  True,
-    "font_name":   "Montserrat",
-    "message_color": "#222222",
-    "popups": [
-        {
-            "trigger": "start",
-            "message": "EyeGuard is now active \u2014 helping you care for your eyes!",
-            "image": "1.png",
-            "sound": "sound_01.mp3",
-            "sound_repeat": 1
-        },
-        {
-            "trigger": "work_end",
-            "message": "Your eyes deserve a quick rest. Take a 30-second break!",
-            "image": "2.png",
-            "sound": "sound_04.mp3",
-            "sound_repeat": 1
-        },
-        {
-            "trigger": "break_end",
-            "message": "Let AI help \u2014 build, test, commit!",
-            "image": "3.png",
-            "sound": "sound_09.mp3",
-            "sound_repeat": 1,
-            "duration_min": 3,
-            "duration_sec": 0
-        },
-        {
-            "trigger": "break_end",
-            "message": "Your eyes deserve a quick rest. Take a 60-second break!",
-            "image": "2.png",
-            "sound": "sound_05.mp3",
-            "sound_repeat": 2,
-            "duration_min": 1,
-            "duration_sec": 0
-        },
-        {
-            "trigger": "break_end",
-            "message": "You\u2019re refreshed now! Go enjoy your life!",
-            "image": "1.png",
-            "sound": "sound_10.mp3",
-            "sound_repeat": 3,
-            "duration_min": 2,
-            "duration_sec": 0
-        },
-        {
-            "trigger": "break_end",
-            "message": "Great! Let\u2019s get back to it, refreshed and focused!",
-            "image": "4.png",
-            "sound": "sound_06.mp3",
-            "sound_repeat": 3,
-            "duration_min": 0,
-            "duration_sec": 0
-        }
-    ]
-}
+def _config_error(msg):
+    print(f"[CONFIG] {msg}")
+    try:
+        from tkinter import messagebox
+        _r = tk.Tk()
+        _r.withdraw()
+        messagebox.showerror("EyeGuard - Config Error", msg)
+        _r.destroy()
+    except Exception:
+        pass
+    sys.exit(1)
 
 def load_config():
-    if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                user_cfg = json.load(f)
-            cfg = DEFAULT_CONFIG.copy()
-            cfg.update(user_cfg)
-            return cfg
-        except Exception as e:
-            print(f"[CONFIG] Failed to load config.json, using defaults: {e}")
-    return DEFAULT_CONFIG.copy()
+    """Load the external config.json from the application root folder (required)."""
+    if not os.path.exists(CONFIG_PATH):
+        _config_error(f"config.json not found:\n{CONFIG_PATH}")
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        _config_error(f"Failed to load config.json:\n{CONFIG_PATH}\n\n{e}")
 
 CONFIG = load_config()
 
@@ -115,10 +63,27 @@ else:
     WORK_TIME = (CONFIG.get("work_time_min", 25) * 60
                  + CONFIG.get("work_time_sec", 0))
 
-BREAK_MILESTONES = [
-    p for p in CONFIG.get("popups", [])
-    if p.get("trigger") == "break_end"
-]
+# ====================== POPUP TRIGGERS ======================
+#   "om_start"     → fires ONCE when the application starts
+#   "milestone_N"  → break milestones, fired in order of N every cycle
+#   "cycle_end"    → last popup of every cycle, new cycle starts right after it
+START_TRIGGERS     = ("om_start", "on_start", "start")
+MILESTONE_PREFIX   = "milestone_"
+CYCLE_END_TRIGGER  = "cycle_end"
+
+POPUPS = CONFIG.get("popups", [])
+
+def _milestone_number(p):
+    try:
+        return int(str(p.get("trigger", "")).split("_", 1)[1])
+    except (IndexError, ValueError):
+        return 0
+
+BREAK_MILESTONES = sorted(
+    [p for p in POPUPS
+     if str(p.get("trigger", "")).startswith(MILESTONE_PREFIX)],
+    key=_milestone_number,
+)
 
 if TEST_MODE:
     MILESTONE_DURATIONS = [TEST_INTERVAL] * len(BREAK_MILESTONES)
@@ -132,33 +97,36 @@ BREAK_TIME  = sum(MILESTONE_DURATIONS)
 TOTAL_CYCLE = WORK_TIME + BREAK_TIME
 
 # ──────────────────────────────────────────────────────────────────────────────
-# NEW POPUP SEQUENCE (popup fires first, then its duration elapses):
+# POPUP SEQUENCE
 #
-#   cycle_start
-#   │
-#   ├── fire "work_end" popup immediately          ← work phase begins
+#   application start
+#   └── fire "om_start" popup  (ONLY ONCE per application launch)
+#
+#   cycle_start                                    ← work phase begins
 #   │   sleep WORK_TIME
 #   │
-#   ├── fire milestone[0] popup                    ← break phase begins
+#   ├── fire milestone_1 popup                     ← break phase begins
 #   │   sleep MILESTONE_DURATIONS[0]
 #   │
-#   ├── fire milestone[1] popup
+#   ├── fire milestone_2 popup
 #   │   sleep MILESTONE_DURATIONS[1]
 #   │
-#   └── (repeat for all milestones)
-#       → next cycle starts (fire "work_end" popup again)
+#   ├── (repeat for all milestones)
+#   │
+#   └── fire "cycle_end" popup                     ← end of cycle
+#       → next cycle starts immediately (work phase again)
 #
-# TOTAL_CYCLE = WORK_TIME + sum(MILESTONE_DURATIONS)   [unchanged]
+# TOTAL_CYCLE = WORK_TIME + sum(MILESTONE_DURATIONS)
 # ──────────────────────────────────────────────────────────────────────────────
 
 CYCLE_ALIGN = CONFIG.get("cycle_align", False) and not TEST_MODE
 
-POPUPS = CONFIG.get("popups", DEFAULT_CONFIG["popups"])
-
 def get_popup_by_trigger(trigger):
-    for p in POPUPS:
-        if p.get("trigger") == trigger:
-            return p
+    triggers = trigger if isinstance(trigger, (tuple, list)) else (trigger,)
+    for t in triggers:
+        for p in POPUPS:
+            if p.get("trigger") == t:
+                return p
     return None
 
 pygame.init()
@@ -286,15 +254,14 @@ def seconds_since_midnight():
 
 def find_aligned_cycle_start_wall():
     """
-    With the new popup-first model the "boundary" is still the point where the
-    last milestone popup FIRED (not ended).  The grid is the same: multiples of
-    TOTAL_CYCLE anchored to midnight.
+    The grid is multiples of TOTAL_CYCLE anchored to midnight.
+    The "cycle_end" popup fires exactly on a grid boundary, and the next
+    work phase starts on that same boundary.
 
-    We find the NEXT boundary that is at least 1 second in the future, then
-    work out where the cycle START must have been so that the last milestone
-    fires exactly on that boundary.
+    We find the NEXT boundary that is at least 1 second in the future.
+    The cycle that is currently running started one TOTAL_CYCLE earlier.
 
-    Returns (cycle_start_wall, last_milestone_fire_wall).
+    Returns (cycle_start_wall, cycle_end_fire_wall).
     """
     import math
 
@@ -311,26 +278,10 @@ def find_aligned_cycle_start_wall():
         boundary_sm    = candidate_idx * TOTAL_CYCLE
         boundary_wall  = midnight_wall + boundary_sm
 
-    # In the new model:
-    #   cycle_start → fire work_end → sleep WORK_TIME
-    #               → fire milestone[0] → sleep DUR[0]
-    #               → fire milestone[1] → sleep DUR[1]
-    #               → ...
-    #               → fire milestone[-1]   ← this is the boundary
-    #
-    # So:  boundary = cycle_start + WORK_TIME + sum(DUR[:-1])
-    # i.e. boundary = cycle_start + TOTAL_CYCLE - MILESTONE_DURATIONS[-1]
-    #
-    # Wait — for alignment we snap the LAST milestone FIRE to the boundary,
-    # not the end of the cycle.  The "end of cycle" is boundary + last_dur.
-    # But conventionally the user expects "snaps to :00/:30 clock marks",
-    # meaning the *work_end* popup fires on those marks (start of break).
-    # We keep the same convention: the last milestone *fires* on the boundary,
-    # which is the same as before.
-    last_fire_wall   = boundary_wall
-    cycle_start_wall = last_fire_wall - WORK_TIME - sum(MILESTONE_DURATIONS[:-1])
+    cycle_end_fire_wall = boundary_wall
+    cycle_start_wall    = cycle_end_fire_wall - TOTAL_CYCLE
 
-    return cycle_start_wall, last_fire_wall
+    return cycle_start_wall, cycle_end_fire_wall
 
 def fmt_wall(wall_time):
     return time.strftime('%H:%M:%S', time.localtime(wall_time))
@@ -359,73 +310,65 @@ def timer_thread():
     print(f"Popup opacity: {_opacity_pct}%")
     print(f"Cycle alignment: {'ON' if CYCLE_ALIGN else 'OFF'}")
     print()
-    print("NEW SEQUENCE per cycle:")
-    print("  fire work_end popup → sleep WORK_TIME")
+    print("SEQUENCE:")
+    print("  fire om_start popup (once, on application start)")
+    print("  per cycle:")
+    print(f"    work phase → sleep {WORK_TIME}s")
     for i, dur in enumerate(MILESTONE_DURATIONS):
-        print(f"  fire milestone[{i+1}] popup → sleep {dur}s")
+        print(f"    fire milestone_{i+1} popup → sleep {dur}s")
+    print("    fire cycle_end popup → next cycle starts")
     print("=" * 60)
 
-    # ── On-start popup fires once immediately on launch ───────────────
-    fire_popup("start")
+    # ── On-start popup fires ONLY ONCE on application launch ──────────
+    print(f"[ON START  POPUP] {format_time_from_timestamp(time.time())}")
+    fire_popup(START_TRIGGERS)
 
     # ──────────────────────────────────────────────────────────────────
-    # ALIGNED FIRST CYCLE
+    # ALIGNED FIRST (PARTIAL) CYCLE
     # ──────────────────────────────────────────────────────────────────
     if CYCLE_ALIGN:
-        cycle_start_wall, last_fire_wall = find_aligned_cycle_start_wall()
-        now_wall = time.time()
+        cycle_start_wall, cycle_end_fire_wall = find_aligned_cycle_start_wall()
 
-        # Derive absolute wall-clock fire times for every event:
-        #   work_end fires at: cycle_start_wall  (first event of cycle)
+        # Absolute wall-clock fire times:
         #   milestone[i] fires at: cycle_start_wall + WORK_TIME + sum(DUR[:i])
-        work_end_fire_wall = cycle_start_wall
+        #   cycle_end    fires at: cycle_start_wall + TOTAL_CYCLE
         milestone_fire_walls = []
         t = cycle_start_wall + WORK_TIME
         for dur in MILESTONE_DURATIONS:
             milestone_fire_walls.append(t)
             t += dur
 
-        print(f"\n[ALIGN] Last milestone fires at: {fmt_wall(last_fire_wall)}")
-        print(f"[ALIGN] Aligned cycle start:     {fmt_wall(cycle_start_wall)}")
-        print(f"[ALIGN] Work End fires at:        {fmt_wall(work_end_fire_wall)}")
+        print(f"\n[ALIGN] Aligned cycle start:     {fmt_wall(cycle_start_wall)}")
         for i, fw in enumerate(milestone_fire_walls):
             print(f"[ALIGN] Milestone {i+1} fires at:  {fmt_wall(fw)}")
+        print(f"[ALIGN] Cycle End fires at:      {fmt_wall(cycle_end_fire_wall)}")
 
-        # ── Work End popup (may fire immediately if already past target) ──
-        if work_end_fire_wall > now_wall:
-            wait   = work_end_fire_wall - now_wall
-            end_pc = time.perf_counter() + wait
-            print(f"[ALIGN] Waiting {wait:.1f}s for Work End at {fmt_wall(work_end_fire_wall)}")
-            _precise_sleep(end_pc)
-
-        print(f"[WORK END  POPUP] {format_time_from_timestamp(time.time())} "
-              f"(target {fmt_wall(work_end_fire_wall)})")
-        fire_popup("work_end")
-
-        # ── Milestone popups ─────────────────────────────────────────
+        # ── Milestone popups (only those still in the future) ──────────
         for idx, (milestone, fire_wall) in enumerate(
                 zip(BREAK_MILESTONES, milestone_fire_walls)):
             now_wall = time.time()
-            if fire_wall > now_wall:
-                end_pc = time.perf_counter() + (fire_wall - now_wall)
-                _precise_sleep(end_pc)
+            if fire_wall < now_wall:
+                print(f"[ALIGN] Milestone {idx+1} ({fmt_wall(fire_wall)}) "
+                      f"already passed before launch — skipped")
+                continue
+            _precise_sleep(time.perf_counter() + (fire_wall - now_wall))
 
             drift = time.time() - fire_wall
             print(f"[MILESTONE {idx+1} POPUP] {format_time_from_timestamp(time.time())} "
                   f"(target {fmt_wall(fire_wall)} | drift {drift:+.3f}s)")
             fire_popup(popup_data=milestone)
 
-        # After aligned first cycle the next cycle starts after the last
-        # milestone's duration has elapsed (= last_fire_wall + last_dur)
-        last_dur = MILESTONE_DURATIONS[-1] if MILESTONE_DURATIONS else 0
-        next_cycle_start_wall = last_fire_wall + last_dur
-        print(f"[ALIGN] Aligned cycle complete. "
-              f"Next cycle starts at {fmt_wall(next_cycle_start_wall)}")
-
-        # Sleep until the next cycle boundary
-        gap = next_cycle_start_wall - time.time()
+        # ── Cycle End popup on the grid boundary ───────────────────────
+        gap = cycle_end_fire_wall - time.time()
         if gap > 0:
             _precise_sleep(time.perf_counter() + gap)
+        drift = time.time() - cycle_end_fire_wall
+        print(f"[CYCLE END POPUP] {format_time_from_timestamp(time.time())} "
+              f"(target {fmt_wall(cycle_end_fire_wall)} | drift {drift:+.3f}s)")
+        fire_popup(CYCLE_END_TRIGGER)
+
+        print(f"[ALIGN] Aligned cycle complete. "
+              f"Next cycle starts at {fmt_wall(cycle_end_fire_wall)}")
 
         cycle_number = 2
     else:
@@ -435,25 +378,21 @@ def timer_thread():
     # NORMAL CYCLE LOOP
     # ──────────────────────────────────────────────────────────────────
     while True:
-        cycle_start_pc  = time.perf_counter()
+        cycle_start_pc   = time.perf_counter()
         cycle_start_wall = time.time()
-        print(f"\n[CYCLE {cycle_number} START] {format_time_from_timestamp(cycle_start_wall)}")
-
-        # ── 1. Fire "Work End" popup immediately → signals start of work phase ──
-        print(f"[WORK END  POPUP] {format_time_from_timestamp(time.time())} | "
+        print(f"\n[CYCLE {cycle_number} START] {format_time_from_timestamp(cycle_start_wall)} | "
               f"work phase begins ({WORK_TIME}s)")
-        fire_popup("work_end")
 
-        # ── 2. Sleep for the full work duration ──────────────────────
+        # ── 1. Sleep for the full work duration ──────────────────────
         work_target_pc = cycle_start_pc + WORK_TIME
         _precise_sleep(work_target_pc)
 
         elapsed = time.perf_counter() - cycle_start_pc
         drift   = elapsed - WORK_TIME
-        print(f"[WORK END  SLEEP] {format_time_from_timestamp(time.time())} | "
+        print(f"[WORK TIME END  ] {format_time_from_timestamp(time.time())} | "
               f"expected +{WORK_TIME:.3f}s | actual +{elapsed:.3f}s | drift {drift:+.6f}s")
 
-        # ── 3. Fire each milestone popup then sleep its duration ──────
+        # ── 2. Fire each milestone popup then sleep its duration ──────
         accum = WORK_TIME
         for idx, (milestone, dur) in enumerate(
                 zip(BREAK_MILESTONES, MILESTONE_DURATIONS)):
@@ -474,6 +413,10 @@ def timer_thread():
             print(f"[MILESTONE {idx+1} SLEEP] {format_time_from_timestamp(time.time())} | "
                   f"expected +{accum:.3f}s | actual +{elapsed:.3f}s | drift {drift:+.6f}s")
 
+        # ── 3. Fire Cycle End popup (last popup of the cycle) ─────────
+        print(f"[CYCLE END POPUP] {format_time_from_timestamp(time.time())}")
+        fire_popup(CYCLE_END_TRIGGER)
+
         # ── 4. Cycle summary ─────────────────────────────────────────
         cycle_elapsed = time.perf_counter() - cycle_start_pc
         cycle_drift   = cycle_elapsed - TOTAL_CYCLE
@@ -482,7 +425,6 @@ def timer_thread():
               f"expected {TOTAL_CYCLE:.3f}s | actual {cycle_elapsed:.3f}s | "
               f"total drift {cycle_drift:+.6f}s")
         cycle_number += 1
-
 def main():
     root = tk.Tk()
     root.withdraw()

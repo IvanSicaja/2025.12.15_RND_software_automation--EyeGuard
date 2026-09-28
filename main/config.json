@@ -8,21 +8,14 @@
   "message_color": "#222222",
   "popups": [
     {
-      "trigger": "start",
+      "trigger": "om_start",
       "message": "EyeGuard is now active — helping you care for your eyes!",
       "image": "1.png",
       "sound": "sound_01.mp3",
       "sound_repeat": 1
     },
     {
-      "trigger": "work_end",
-      "message": "Your eyes deserve a quick rest. Take a 30-second break!",
-      "image": "2.png",
-      "sound": "sound_04.mp3",
-      "sound_repeat": 1
-    },
-    {
-      "trigger": "break_end",
+      "trigger": "milestone_1",
       "message": "Let AI help — build, test, commit!",
       "image": "3.png",
       "sound": "sound_09.mp3",
@@ -31,7 +24,7 @@
       "duration_sec": 0
     },
     {
-      "trigger": "break_end",
+      "trigger": "milestone_2",
       "message": "Your eyes deserve a quick rest. Take a 60-second break!",
       "image": "2.png",
       "sound": "sound_05.mp3",
@@ -40,7 +33,7 @@
       "duration_sec": 0
     },
     {
-      "trigger": "break_end",
+      "trigger": "milestone_3",
       "message": "You’re refreshed now! Go enjoy your life!",
       "image": "1.png",
       "sound": "sound_10.mp3",
@@ -49,13 +42,11 @@
       "duration_sec": 0
     },
     {
-      "trigger": "break_end",
+      "trigger": "cycle_end",
       "message": "Great! Let’s get back to it, refreshed and focused!",
       "image": "4.png",
       "sound": "sound_06.mp3",
-      "sound_repeat": 3,
-      "duration_min": 0,
-      "duration_sec": 0
+      "sound_repeat": 3
     }
   ]
 }
