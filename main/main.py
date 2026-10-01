@@ -17,7 +17,25 @@ else:
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ====================== LOAD CONFIG ======================
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "config.json")
+# EyeGuard always uses the .json file located in its root folder
+# (the folder of main.py / EyeGuard.exe). If there are several .json files,
+# the first one in alphanumeric order (case-insensitive) is used.
+ROOT_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
+
+def find_config_path(root_dir=ROOT_DIR):
+    """Return the first *.json file (alphanumeric order) in root_dir, or None."""
+    try:
+        names = [n for n in os.listdir(root_dir)
+                 if n.lower().endswith(".json")
+                 and os.path.isfile(os.path.join(root_dir, n))]
+    except OSError:
+        return None
+    if not names:
+        return None
+    names.sort(key=lambda n: (n.lower(), n))
+    return os.path.join(root_dir, names[0])
+
+CONFIG_PATH = find_config_path()
 
 def _config_error(msg):
     print(f"[CONFIG] {msg}")
@@ -32,14 +50,19 @@ def _config_error(msg):
     sys.exit(1)
 
 def load_config():
-    """Load the external config.json from the application root folder (required)."""
-    if not os.path.exists(CONFIG_PATH):
-        _config_error(f"config.json not found:\n{CONFIG_PATH}")
+    """Load the external configuration from the application root folder (required)."""
+    if CONFIG_PATH is None:
+        _config_error(f"No .json configuration file found in:\n{ROOT_DIR}\n\n"
+                      "Use EyeGuard Configurator → 'Save & Use Configuration'.")
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+            cfg = json.load(f)
+        if not isinstance(cfg, dict):
+            raise ValueError("Top-level JSON value must be an object.")
+        print(f"[CONFIG] Using: {CONFIG_PATH}")
+        return cfg
     except Exception as e:
-        _config_error(f"Failed to load config.json:\n{CONFIG_PATH}\n\n{e}")
+        _config_error(f"Failed to load configuration:\n{CONFIG_PATH}\n\n{e}")
 
 CONFIG = load_config()
 

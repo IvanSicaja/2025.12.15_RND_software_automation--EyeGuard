@@ -2,7 +2,14 @@
 EyeGuard Configurator
 Standalone configuration GUI for EyeGuard.
 Run this script (or its EXE) from the same folder as main.py / main.exe.
-It reads and writes config.json in that same folder.
+
+Root folder rules (shared with EyeGuard):
+  • EyeGuard uses the first *.json file (alphanumeric order) in the root folder.
+  • "Save & Use Configuration" writes active_config.json into the root folder
+    and removes every OTHER *.json file directly in the root folder
+    (sub-folders and non-JSON files are never touched).
+  • Templates live in <root>/templates. templates/default.json is the
+    factory default used on first start and by "Reset to Defaults".
 """
 
 import json
@@ -36,7 +43,12 @@ def preview_sound(sound_path):
 
 # ====================== PATHS ======================
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(sys.argv[0]))
-CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
+
+ACTIVE_CONFIG_NAME    = "active_config.json"
+CONFIG_PATH           = os.path.join(SCRIPT_DIR, ACTIVE_CONFIG_NAME)
+TEMPLATES_DIR         = os.path.join(SCRIPT_DIR, "templates")
+DEFAULT_TEMPLATE_PATH = os.path.join(TEMPLATES_DIR, "default.json")
+JSON_FILETYPES        = [("JSON configuration", "*.json"), ("All files", "*.*")]
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = sys._MEIPASS
@@ -84,45 +96,126 @@ DEFAULT_CONFIG = {
 
 # ====================== HELPERS ======================
 
+def _deep_copy(obj):
+    return json.loads(json.dumps(obj))
+
+def list_root_configs():
+    """All *.json files directly in SCRIPT_DIR, alphanumeric (case-insensitive) order."""
+    try:
+        names = [n for n in os.listdir(SCRIPT_DIR)
+                 if n.lower().endswith(".json")
+                 and os.path.isfile(os.path.join(SCRIPT_DIR, n))]
+    except OSError:
+        return []
+    names.sort(key=lambda n: (n.lower(), n))
+    return [os.path.join(SCRIPT_DIR, n) for n in names]
+
+def find_active_config_path():
+    """The file EyeGuard will use: the first *.json in the root folder, or None."""
+    files = list_root_configs()
+    return files[0] if files else None
+
+def read_config_file(path):
+    """
+    Read a configuration file, migrate old formats and fill missing keys.
+    Raises an exception if the file cannot be read or is not a JSON object.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError("Top-level JSON value must be an object.")
+    if not isinstance(cfg.get("popups", []), list):
+        raise ValueError("'popups' must be a list.")
+    # ── Migrate old key names ──────────────────────────────────
+    if "work_time" in cfg and "work_time_min" not in cfg:
+        cfg["work_time_min"] = cfg.pop("work_time")
+        cfg.setdefault("work_time_sec", 0)
+    if "break_time" in cfg or "free_time" in cfg:
+        brk_min  = cfg.pop("break_time", 3)
+        free_min = cfg.pop("free_time", 2)
+        for p in cfg.get("popups", []):
+            if p.get("trigger") == "break_end" and "duration_min" not in p:
+                p["duration_min"] = brk_min
+                p["duration_sec"] = 0
+        for p in cfg.get("popups", []):
+            if p.get("trigger") == "free_end":
+                p["trigger"]      = "break_end"
+                p["duration_min"] = free_min
+                p["duration_sec"] = 0
+    # ── Migrate old popup format (start / work_end / break_end) ──
+    _migrate_popups(cfg)
+    # ── Fill any missing top-level keys with defaults ──────────
+    for k, v in DEFAULT_CONFIG.items():
+        cfg.setdefault(k, _deep_copy(v))
+    return cfg
+
+def write_config_file(path, cfg):
+    """Write cfg as JSON atomically (temp file + replace). Raises on failure."""
+    folder = os.path.dirname(path)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try: os.remove(tmp)
+            except OSError: pass
+
+def ensure_templates():
+    """
+    Create <root>/templates and templates/default.json (from the built-in
+    defaults) if they do not exist yet. Returns an error string or None.
+    """
+    try:
+        os.makedirs(TEMPLATES_DIR, exist_ok=True)
+        if not os.path.isfile(DEFAULT_TEMPLATE_PATH):
+            write_config_file(DEFAULT_TEMPLATE_PATH, _deep_copy(DEFAULT_CONFIG))
+        return None
+    except Exception as e:
+        return str(e)
+
+def load_default_config():
+    """templates/default.json → built-in defaults as last resort. Returns (cfg, source, error)."""
+    if os.path.isfile(DEFAULT_TEMPLATE_PATH):
+        try:
+            return read_config_file(DEFAULT_TEMPLATE_PATH), DEFAULT_TEMPLATE_PATH, None
+        except Exception as e:
+            return _deep_copy(DEFAULT_CONFIG), None, f"{DEFAULT_TEMPLATE_PATH}:\n{e}"
+    return _deep_copy(DEFAULT_CONFIG), None, None
+
 def load_config():
     """
-    Load config.json from SCRIPT_DIR (same folder as the .exe / script).
-    Falls back to DEFAULT_CONFIG if the file is missing or unreadable.
+    Startup load:
+      1. the active config (first *.json in the root folder), otherwise
+      2. templates/default.json, otherwise
+      3. the built-in defaults.
     Never calls messagebox here — Tk may not exist yet.
-    Stores any load error in load_config.error so __init__ can show it after Tk starts.
+    Stores any load error in load_config.error and the file used in
+    load_config.source so __init__ can show them after Tk starts.
     """
-    load_config.error = None
-    if os.path.exists(CONFIG_PATH):
+    load_config.error  = None
+    load_config.source = None
+    active = find_active_config_path()
+    if active:
         try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            # ── Migrate old key names ──────────────────────────────────
-            if "work_time" in cfg and "work_time_min" not in cfg:
-                cfg["work_time_min"] = cfg.pop("work_time")
-                cfg.setdefault("work_time_sec", 0)
-            if "break_time" in cfg or "free_time" in cfg:
-                brk_min  = cfg.pop("break_time", 3)
-                free_min = cfg.pop("free_time", 2)
-                for p in cfg.get("popups", []):
-                    if p.get("trigger") == "break_end" and "duration_min" not in p:
-                        p["duration_min"] = brk_min
-                        p["duration_sec"] = 0
-                for p in cfg.get("popups", []):
-                    if p.get("trigger") == "free_end":
-                        p["trigger"]      = "break_end"
-                        p["duration_min"] = free_min
-                        p["duration_sec"] = 0
-            # ── Migrate old popup format (start / work_end / break_end) ──
-            _migrate_popups(cfg)
-            # ── Fill any missing top-level keys with defaults ──────────
-            for k, v in DEFAULT_CONFIG.items():
-                cfg.setdefault(k, v)
+            cfg = read_config_file(active)
+            load_config.source = active
             return cfg
         except Exception as e:
-            load_config.error = str(e)
-    return json.loads(json.dumps(DEFAULT_CONFIG))
+            load_config.error = f"{active}:\n{e}"
+    cfg, source, err = load_default_config()
+    load_config.source = source
+    if err:
+        load_config.error = (load_config.error + "\n\n" if load_config.error else "") + err
+    return cfg
 
-load_config.error = None   # initialise attribute
+load_config.error  = None   # initialise attributes
+load_config.source = None
 
 def _migrate_popups(cfg):
     """
@@ -167,15 +260,6 @@ def _migrate_popups(cfg):
         ce["trigger"] = CYCLE_END_TRIGGER
         new.append(ce)
     cfg["popups"] = new
-
-def save_config(cfg):
-    try:
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2, ensure_ascii=False)
-        return True
-    except Exception as e:
-        messagebox.showerror("Save Error", f"Could not write config.json:\n{e}")
-        return False
 
 def list_figures():
     """Return available images with the custom-import option first."""
@@ -645,6 +729,9 @@ class BreakMilestoneManager:
         self._empty_label.pack_forget()
         for data in milestone_list:
             self._add_entry(data)
+        self._repack()
+        if self._on_changed:
+            self._on_changed()
 
     def collect_milestones(self):
         result = []
@@ -851,18 +938,27 @@ class ConfigApp(tk.Tk):
             except Exception:
                 pass
 
+        tmpl_err              = ensure_templates()
         self.cfg              = load_config()
+        self._source_path     = load_config.source
+        self.var_source       = tk.StringVar()
         # Show any config-load error now that Tk exists
         if load_config.error:
             messagebox.showerror(
                 "Load Error",
-                f"Could not read config.json:\n{load_config.error}\n\nUsing defaults.")
+                f"Could not read configuration:\n{load_config.error}\n\n"
+                "Using default configuration instead.")
+        if tmpl_err:
+            messagebox.showwarning(
+                "Templates Folder",
+                f"Could not create the templates folder / default.json:\n{tmpl_err}")
         self._timer_rows      = []
         self.var_test         = tk.BooleanVar()
         self.var_cycle_align  = tk.BooleanVar()
 
         self._build_ui()
         self._populate()
+        self._update_source_label()
 
         self.update_idletasks()
         screen_w = self.winfo_screenwidth()
@@ -1322,10 +1418,21 @@ class ConfigApp(tk.Tk):
         bs = dict(font=("Segoe UI Semibold", 10), relief="flat",
                   cursor="hand2", padx=20, pady=8, bd=0)
 
-        tk.Button(btn_bar, text="✔  Save Configuration",
+        tk.Button(btn_bar, text="✔  Save & Use Configuration",
                   bg=self.ACCENT, fg="white",
                   activebackground="#1558b0", activeforeground="white",
                   command=self._save, **bs).pack(side="right")
+        tk.Button(btn_bar, text="💾  Save as Template…",
+                  bg="#e8f0fe", fg=self.ACCENT,
+                  activebackground="#d2e3fc", activeforeground=self.ACCENT,
+                  command=self._save_as_template, **bs).pack(side="right", padx=(0, 8))
+        tk.Button(btn_bar, text="📂  Load Configuration…",
+                  bg="#e8f0fe", fg=self.ACCENT,
+                  activebackground="#d2e3fc", activeforeground=self.ACCENT,
+                  command=self._load_configuration, **bs).pack(side="right", padx=(0, 8))
+        tk.Label(btn_bar, textvariable=self.var_source,
+                 font=("Segoe UI", 9), bg=self.BG, fg=self.FG_LIGHT,
+                 anchor="w", justify="left").pack(side="left", fill="x", expand=True)
 
         tk.Label(self,
                  text="Developed by Ivan Sicaja © 2026. All rights reserved.",
@@ -1399,20 +1506,154 @@ class ConfigApp(tk.Tk):
             "popups":         popups,
         }
 
+    def _update_source_label(self):
+        if self._source_path:
+            try:
+                shown = os.path.relpath(self._source_path, SCRIPT_DIR)
+            except ValueError:
+                shown = self._source_path
+        else:
+            shown = "built-in defaults"
+        active = find_active_config_path()
+        active_txt = os.path.basename(active) if active else "none"
+        self.var_source.set(f"Loaded: {shown}     |     EyeGuard uses: {active_txt}")
+
+    def _apply_loaded(self, cfg, source):
+        self.cfg          = cfg
+        self._source_path = source
+        self._populate()
+        self._update_totals()
+        self._update_source_label()
+
     def _save(self):
+        """
+        Save & Use: write active_config.json into the root folder and remove
+        every OTHER *.json file directly in the root folder, so EyeGuard
+        unambiguously uses this configuration. Sub-folders (e.g. templates)
+        and non-JSON files are never touched.
+        """
         cfg = self._collect()
         if cfg is None:
             return
-        if save_config(cfg):
-            self.cfg = cfg
+
+        target_norm = os.path.normcase(os.path.abspath(CONFIG_PATH))
+        others = [p for p in list_root_configs()
+                  if os.path.normcase(os.path.abspath(p)) != target_norm]
+        if others:
+            names = "\n".join(f"  • {os.path.basename(p)}" for p in others)
+            if not messagebox.askyesno(
+                    "Save & Use Configuration",
+                    f"The following configuration file(s) in the root folder will be "
+                    f"deleted and replaced by {ACTIVE_CONFIG_NAME}:\n\n{names}\n\n"
+                    "Sub-folders (templates) and other files are not affected.\n\n"
+                    "Continue?"):
+                return
+
+        # 1. Write the new active config first — nothing is deleted if this fails
+        try:
+            write_config_file(CONFIG_PATH, cfg)
+        except Exception as e:
+            messagebox.showerror("Save Error",
+                                 f"Could not write {ACTIVE_CONFIG_NAME}:\n{e}")
+            return
+
+        # 2. Remove the other root-level *.json files
+        failed = []
+        for p in others:
+            try:
+                os.remove(p)
+            except OSError as e:
+                failed.append(f"  • {os.path.basename(p)}: {e}")
+
+        self.cfg          = cfg
+        self._source_path = CONFIG_PATH
+        self._update_source_label()
+
+        if failed:
+            messagebox.showwarning(
+                "Saved with Warnings",
+                f"Configuration saved to:\n{CONFIG_PATH}\n\n"
+                "These files could not be deleted:\n" + "\n".join(failed) +
+                f"\n\nEyeGuard uses the first .json file in alphanumeric order: "
+                f"{os.path.basename(find_active_config_path() or '')}")
+        else:
             messagebox.showinfo("Saved",
-                                f"Configuration saved to:\n{CONFIG_PATH}\n\n"
+                                f"Configuration saved and activated:\n{CONFIG_PATH}\n\n"
                                 "Restart EyeGuard for changes to take effect.")
 
+    def _save_as_template(self):
+        cfg = self._collect()
+        if cfg is None:
+            return
+        try:
+            os.makedirs(TEMPLATES_DIR, exist_ok=True)
+        except OSError:
+            pass
+        initial_dir = TEMPLATES_DIR if os.path.isdir(TEMPLATES_DIR) else SCRIPT_DIR
+        initial_name = "my_template.json"
+        if self._source_path and os.path.normcase(os.path.dirname(os.path.abspath(self._source_path))) \
+                == os.path.normcase(os.path.abspath(TEMPLATES_DIR)):
+            initial_name = os.path.basename(self._source_path)
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Save as Template",
+            initialdir=initial_dir,
+            initialfile=initial_name,
+            defaultextension=".json",
+            filetypes=JSON_FILETYPES,
+            confirmoverwrite=True,
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+        try:
+            write_config_file(path, cfg)
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Could not save template:\n{path}\n\n{e}")
+            return
+        self._source_path = path
+        self._update_source_label()
+        note = ""
+        if os.path.normcase(os.path.dirname(os.path.abspath(path))) == \
+                os.path.normcase(os.path.abspath(SCRIPT_DIR)):
+            note = ("\n\nNote: this file is in the root folder, so EyeGuard may use it "
+                    "(first .json in alphanumeric order).")
+        messagebox.showinfo("Template Saved", f"Template saved to:\n{path}{note}")
+
+    def _load_configuration(self):
+        initial_dir = TEMPLATES_DIR if os.path.isdir(TEMPLATES_DIR) else SCRIPT_DIR
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Load Configuration",
+            initialdir=initial_dir,
+            filetypes=JSON_FILETYPES,
+        )
+        if not path:
+            return
+        try:
+            cfg = read_config_file(path)
+        except Exception as e:
+            messagebox.showerror("Load Error",
+                                 f"Could not load configuration:\n{path}\n\n{e}")
+            return
+        self._apply_loaded(cfg, path)
+
     def _reset(self):
-        if messagebox.askyesno("Reset", "Reset all settings to defaults?"):
-            self.cfg = json.loads(json.dumps(DEFAULT_CONFIG))
-            self._populate()
+        if not messagebox.askyesno(
+                "Reset",
+                "Reset all settings to defaults?\n\n"
+                f"Loads: {os.path.relpath(DEFAULT_TEMPLATE_PATH, SCRIPT_DIR)}\n"
+                "(Nothing is saved until you press Save.)"):
+            return
+        err = ensure_templates()   # re-creates default.json if it was deleted
+        cfg, source, load_err = load_default_config()
+        if err or load_err:
+            messagebox.showwarning(
+                "Reset",
+                f"Could not use {DEFAULT_TEMPLATE_PATH}:\n{err or load_err}\n\n"
+                "Built-in defaults were loaded instead.")
+        self._apply_loaded(cfg, source)
 
 
 # ====================== ENTRY ======================
