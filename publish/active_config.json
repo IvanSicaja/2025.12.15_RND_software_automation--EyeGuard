@@ -1,5 +1,5 @@
 {
-  "work_time_min": 25,
+  "work_time_min": 24,
   "work_time_sec": 0,
   "popup_opacity": 100,
   "test_mode": false,
@@ -20,7 +20,7 @@
       "image": "3.png",
       "sound": "sound_09.mp3",
       "sound_repeat": 1,
-      "duration_min": 2,
+      "duration_min": 3,
       "duration_sec": 0
     },
     {

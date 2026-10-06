@@ -8,6 +8,7 @@ pyinstaller --onefile --windowed --name EyeGuard --icon=..\assets\media\icons\ic
 
 4. Create a standalone executable with icon
 pyinstaller --onefile --windowed --name EyeGuardConfigurator --icon=..\assets\media\icons\icon.ico --distpath publish --workpath publish\build --specpath publish --add-data "../assets/media/sounds;assets/media/sounds" --add-data "../assets/media/icons;assets/media/icons" --add-data "../assets/media/figures;assets/media/figures" main\configurator.py
+
 ---------------------------------------------------------------------------------------------------------------------------
 5. Optional for removing non necessary files -> run in pycharm terminal
 Get-ChildItem -Path .\publish | Where-Object {
